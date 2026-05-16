@@ -28,6 +28,8 @@ else
     WARP_APP_PATH="target/debug/bundle/osx/WarpOss.app"
     WARP_SCHEME_NAME="warposs"
 fi
+CODEX_DEV_BUNDLE_ID="dev.warp.WarpOss"
+CODEX_DEV_APP_NAME="WarpCodexOss"
 DONT_OPEN=false
 # Launches the binary with "open", meaning the Warp process is
 # launched by the MacOS application launcher instead of a shell session.
@@ -44,6 +46,10 @@ WARP_ARGS=()
 # Export this variable so it can be referenced by app/build.rs later when
 # running `cargo bundle`.
 export FRAMEWORK_OVERRIDE="dev"
+
+# This private fork defaults to local Codex AI. Exporting the variable makes the
+# active mode visible in `ps eww`, instead of relying on the Rust default alone.
+export WARP_LOCAL_CODEX_AI="${WARP_LOCAL_CODEX_AI:-1}"
 
 PARAMS=""
 while (( "$#" )); do
@@ -92,13 +98,23 @@ while (( "$#" )); do
   esac
 done
 
-rm -rf "$WARP_APP_PATH"
+CODEX_DEV_APP_PATH="$(dirname "$WARP_APP_PATH")/$CODEX_DEV_APP_NAME.app"
+rm -rf "$WARP_APP_PATH" "$CODEX_DEV_APP_PATH"
 
 pushd app > /dev/null
 echo "Bundling app (bin: $WARP_BIN_NAME)..."
+if [[ -z "${TERM:-}" || "${TERM:-}" == "dumb" ]]; then
+  export TERM=xterm-256color
+fi
 cargo bundle --bin "$WARP_BIN_NAME" --features "$FEATURES" $PARAMS
 echo "Successfully bundled..."
 popd > /dev/null
+
+if [ "$WARP_CHANNEL" = "oss" ] && [ "$WARP_LOCAL_CODEX_AI" != "0" ]; then
+  echo "Renaming local Codex dev bundle to $CODEX_DEV_APP_NAME.app to avoid /Applications/WarpOss.app conflicts..."
+  mv "$WARP_APP_PATH" "$CODEX_DEV_APP_PATH"
+  WARP_APP_PATH="$CODEX_DEV_APP_PATH"
+fi
 
 if [[ ",$FEATURES," =~ ",cocoa_sentry," ]]; then
   echo "Copying Sentry framework into app bundle..."
@@ -111,6 +127,11 @@ install_name_tool -add_rpath "@executable_path/../Frameworks" "$WARP_APP_PATH/Co
 export WARP_SCHEME_NAME
 export WARP_PLIST_PATH="$WARP_APP_PATH/Contents/Info.plist"
 ./script/update_plist
+if [ "$WARP_CHANNEL" = "oss" ] && [ "$WARP_LOCAL_CODEX_AI" != "0" ]; then
+  plutil -replace CFBundleIdentifier -string "$CODEX_DEV_BUNDLE_ID" "$WARP_PLIST_PATH"
+  plutil -replace CFBundleName -string "$CODEX_DEV_APP_NAME" "$WARP_PLIST_PATH"
+  plutil -replace CFBundleDisplayName -string "$CODEX_DEV_APP_NAME" "$WARP_PLIST_PATH"
+fi
 
 echo "Preparing bundled resources..."
 if [ "${GENERATE_SCHEMA:-false}" != "true" ]; then

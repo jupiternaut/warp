@@ -1,9 +1,7 @@
 use std::collections::HashMap;
-use std::ffi::OsString;
 use std::fs;
 use std::sync::Arc;
 
-use serde_json::Value;
 use tempfile::TempDir;
 use uuid::Uuid;
 
@@ -13,157 +11,22 @@ use crate::ai::agent::conversation::AIConversationId;
 use crate::server::server_api::harness_support::MockHarnessSupportClient;
 
 #[test]
-fn prepare_codex_auth_writes_fresh_file_with_api_key_mode() {
-    let tmp = TempDir::new().unwrap();
-    let auth_path = tmp.path().join(".codex/auth.json");
+fn codex_login_status_failure_reason_points_to_official_login_flow() {
+    let reason =
+        codex_login_status_failure_reason(Some(1), b"", b"Not logged in. Run codex login.");
 
-    prepare_codex_auth(&auth_path, "sk-test-key").unwrap();
-
-    let auth: Value = serde_json::from_slice(&fs::read(&auth_path).unwrap()).unwrap();
-    assert_eq!(auth["OPENAI_API_KEY"], "sk-test-key");
-    assert_eq!(auth["auth_mode"], "apikey");
+    assert!(reason.contains("codex login --device-auth"));
+    assert!(reason.contains("Not logged in. Run codex login."));
 }
 
 #[test]
-fn prepare_codex_auth_preserves_unrelated_fields() {
-    let tmp = TempDir::new().unwrap();
-    let auth_path = tmp.path().join("auth.json");
-    fs::write(
-        &auth_path,
-        r#"{"tokens":{"access_token":"tok"},"last_refresh":"2026-01-01T00:00:00Z"}"#,
-    )
-    .unwrap();
-
-    prepare_codex_auth(&auth_path, "sk-new-key").unwrap();
-
-    let auth: Value = serde_json::from_slice(&fs::read(&auth_path).unwrap()).unwrap();
-    assert_eq!(auth["OPENAI_API_KEY"], "sk-new-key");
-    assert_eq!(auth["auth_mode"], "apikey");
-    assert_eq!(auth["tokens"]["access_token"], "tok");
-    assert_eq!(auth["last_refresh"], "2026-01-01T00:00:00Z");
-}
-
-#[test]
-fn prepare_codex_auth_does_not_overwrite_existing_auth_mode() {
-    let tmp = TempDir::new().unwrap();
-    let auth_path = tmp.path().join("auth.json");
-    fs::write(&auth_path, r#"{"auth_mode":"Chatgpt"}"#).unwrap();
-
-    prepare_codex_auth(&auth_path, "sk-new-key").unwrap();
-
-    let auth: Value = serde_json::from_slice(&fs::read(&auth_path).unwrap()).unwrap();
-    assert_eq!(auth["auth_mode"], "Chatgpt");
-    assert_eq!(auth["OPENAI_API_KEY"], "sk-new-key");
-}
-
-#[test]
-fn prepare_codex_auth_overwrites_stale_openai_api_key() {
-    let tmp = TempDir::new().unwrap();
-    let auth_path = tmp.path().join("auth.json");
-    fs::write(
-        &auth_path,
-        r#"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-old"}"#,
-    )
-    .unwrap();
-
-    prepare_codex_auth(&auth_path, "sk-new").unwrap();
-
-    let auth: Value = serde_json::from_slice(&fs::read(&auth_path).unwrap()).unwrap();
-    assert_eq!(auth["OPENAI_API_KEY"], "sk-new");
-}
-
-#[cfg(unix)]
-#[test]
-fn prepare_codex_auth_writes_with_0600_perms() {
-    use std::os::unix::fs::PermissionsExt;
-    let tmp = TempDir::new().unwrap();
-    let auth_path = tmp.path().join(".codex/auth.json");
-
-    prepare_codex_auth(&auth_path, "sk-test-key").unwrap();
-
-    let mode = fs::metadata(&auth_path).unwrap().permissions().mode() & 0o777;
-    assert_eq!(mode, 0o600);
-}
-
-#[test]
-fn resolve_openai_api_key_returns_value_from_resolved_map() {
-    let resolved = HashMap::from([(
-        OsString::from("OPENAI_API_KEY"),
-        OsString::from("sk-from-secret"),
-    )]);
-    assert_eq!(
-        resolve_openai_api_key(&resolved).as_deref(),
-        Some("sk-from-secret")
-    );
-}
-
-#[test]
-#[serial_test::serial]
-fn resolve_openai_api_key_falls_back_to_env_var() {
-    let prev = std::env::var(OPENAI_API_KEY_ENV).ok();
-    std::env::set_var(OPENAI_API_KEY_ENV, "sk-from-env");
-
-    let result = resolve_openai_api_key(&HashMap::new());
-
-    match prev {
-        Some(v) => std::env::set_var(OPENAI_API_KEY_ENV, v),
-        None => std::env::remove_var(OPENAI_API_KEY_ENV),
-    }
-    assert_eq!(result.as_deref(), Some("sk-from-env"));
-}
-
-#[test]
-#[serial_test::serial]
-fn resolve_openai_api_key_returns_none_when_map_and_env_empty() {
-    let prev = std::env::var(OPENAI_API_KEY_ENV).ok();
-    std::env::remove_var(OPENAI_API_KEY_ENV);
-
-    let result = resolve_openai_api_key(&HashMap::new());
-
-    if let Some(v) = prev {
-        std::env::set_var(OPENAI_API_KEY_ENV, v);
-    }
-    assert_eq!(result, None);
-}
-
-#[test]
-#[serial_test::serial]
-fn resolve_openai_api_key_prefers_env_over_resolved_map() {
-    // Worker-injected env var wins over the resolved secret map because
-    // build_secret_env_vars skips secrets that collide with process env.
-    let prev = std::env::var(OPENAI_API_KEY_ENV).ok();
-    std::env::set_var(OPENAI_API_KEY_ENV, "sk-from-env");
-    let resolved = HashMap::from([(
-        OsString::from("OPENAI_API_KEY"),
-        OsString::from("sk-from-secret"),
-    )]);
-
-    let result = resolve_openai_api_key(&resolved);
-
-    match prev {
-        Some(v) => std::env::set_var(OPENAI_API_KEY_ENV, v),
-        None => std::env::remove_var(OPENAI_API_KEY_ENV),
-    }
-    assert_eq!(result.as_deref(), Some("sk-from-env"));
-}
-
-#[test]
-#[serial_test::serial]
-fn resolve_openai_api_key_uses_resolved_map_when_env_empty() {
-    let prev = std::env::var(OPENAI_API_KEY_ENV).ok();
-    std::env::set_var(OPENAI_API_KEY_ENV, "   ");
-    let resolved = HashMap::from([(
-        OsString::from("OPENAI_API_KEY"),
-        OsString::from("sk-from-secret"),
-    )]);
-
-    let result = resolve_openai_api_key(&resolved);
-
-    match prev {
-        Some(v) => std::env::set_var(OPENAI_API_KEY_ENV, v),
-        None => std::env::remove_var(OPENAI_API_KEY_ENV),
-    }
-    assert_eq!(result.as_deref(), Some("sk-from-secret"));
+fn codex_local_only_fallback_is_limited_to_workload_token_errors() {
+    assert!(should_run_codex_local_only(&anyhow::anyhow!(
+        "valid workload token required"
+    )));
+    assert!(!should_run_codex_local_only(&anyhow::anyhow!(
+        "upstream returned status 500"
+    )));
 }
 
 fn read_codex_config(path: &std::path::Path) -> toml::Table {
@@ -178,7 +41,7 @@ fn prepare_codex_config_toml_writes_fresh_config() {
     let working_dir = tmp.path().join("workspace/proj");
     fs::create_dir_all(&working_dir).unwrap();
 
-    prepare_codex_config_toml(&config_path, &working_dir, &HashMap::new(), None).unwrap();
+    prepare_codex_config_toml(&config_path, &working_dir, &HashMap::new(), None, None).unwrap();
 
     let canonical = working_dir.canonicalize().unwrap();
     let key = canonical.to_string_lossy().into_owned();
@@ -187,7 +50,7 @@ fn prepare_codex_config_toml_writes_fresh_config() {
         cfg["projects"][&key]["trust_level"].as_str(),
         Some("trusted")
     );
-    assert_eq!(cfg["openai_base_url"].as_str(), Some(CODEX_OPENAI_BASE_URL));
+    assert!(cfg.get("openai_base_url").is_none());
 }
 
 #[test]
@@ -203,7 +66,7 @@ fn prepare_codex_config_toml_preserves_unrelated_keys() {
     .unwrap();
 
     // Pass `None` for the model id so the helper preserves the user's existing `model = ...`.
-    prepare_codex_config_toml(&config_path, &working_dir, &HashMap::new(), None).unwrap();
+    prepare_codex_config_toml(&config_path, &working_dir, &HashMap::new(), None, None).unwrap();
 
     let canonical = working_dir.canonicalize().unwrap();
     let key = canonical.to_string_lossy().into_owned();
@@ -226,9 +89,9 @@ fn prepare_codex_config_toml_is_idempotent() {
     let working_dir = tmp.path().join("workspace");
     fs::create_dir_all(&working_dir).unwrap();
 
-    prepare_codex_config_toml(&config_path, &working_dir, &HashMap::new(), None).unwrap();
+    prepare_codex_config_toml(&config_path, &working_dir, &HashMap::new(), None, None).unwrap();
     let after_first = fs::read_to_string(&config_path).unwrap();
-    prepare_codex_config_toml(&config_path, &working_dir, &HashMap::new(), None).unwrap();
+    prepare_codex_config_toml(&config_path, &working_dir, &HashMap::new(), None, None).unwrap();
     let after_second = fs::read_to_string(&config_path).unwrap();
 
     assert_eq!(after_first, after_second);
@@ -238,7 +101,7 @@ fn prepare_codex_config_toml_is_idempotent() {
     let projects = cfg["projects"].as_table().unwrap();
     assert_eq!(projects.len(), 1);
     assert_eq!(projects[&key]["trust_level"].as_str(), Some("trusted"));
-    assert_eq!(cfg["openai_base_url"].as_str(), Some(CODEX_OPENAI_BASE_URL));
+    assert!(cfg.get("openai_base_url").is_none());
 }
 
 #[test]
@@ -257,7 +120,7 @@ fn prepare_codex_config_toml_upgrades_untrusted_entry() {
     )
     .unwrap();
 
-    prepare_codex_config_toml(&config_path, &working_dir, &HashMap::new(), None).unwrap();
+    prepare_codex_config_toml(&config_path, &working_dir, &HashMap::new(), None, None).unwrap();
 
     let cfg = read_codex_config(&config_path);
     assert_eq!(
@@ -276,7 +139,7 @@ fn prepare_codex_config_toml_trusts_multiple_child_repos() {
     fs::create_dir_all(repo_a.join(".git")).unwrap();
     fs::create_dir_all(repo_b.join(".git")).unwrap();
 
-    prepare_codex_config_toml(&config_path, &working_dir, &HashMap::new(), None).unwrap();
+    prepare_codex_config_toml(&config_path, &working_dir, &HashMap::new(), None, None).unwrap();
 
     let cfg = read_codex_config(&config_path);
     let projects = cfg["projects"].as_table().unwrap();
@@ -293,7 +156,7 @@ fn prepare_codex_config_toml_trusts_multiple_child_repos() {
 }
 
 #[test]
-fn prepare_codex_config_toml_overwrites_stale_openai_base_url() {
+fn prepare_codex_config_toml_preserves_stale_openai_base_url_in_oauth_mode() {
     let tmp = TempDir::new().unwrap();
     let config_path = tmp.path().join("config.toml");
     let working_dir = tmp.path().join("workspace");
@@ -304,10 +167,36 @@ fn prepare_codex_config_toml_overwrites_stale_openai_base_url() {
     )
     .unwrap();
 
-    prepare_codex_config_toml(&config_path, &working_dir, &HashMap::new(), None).unwrap();
+    prepare_codex_config_toml(&config_path, &working_dir, &HashMap::new(), None, None).unwrap();
 
     let cfg = read_codex_config(&config_path);
-    assert_eq!(cfg["openai_base_url"].as_str(), Some(CODEX_OPENAI_BASE_URL));
+    assert_eq!(
+        cfg["openai_base_url"].as_str(),
+        Some("https://api.openai.com/v1")
+    );
+}
+
+#[test]
+fn prepare_codex_config_toml_writes_openai_base_url_when_supplied() {
+    let tmp = TempDir::new().unwrap();
+    let config_path = tmp.path().join("config.toml");
+    let working_dir = tmp.path().join("workspace");
+    fs::create_dir_all(&working_dir).unwrap();
+
+    prepare_codex_config_toml(
+        &config_path,
+        &working_dir,
+        &HashMap::new(),
+        None,
+        Some("https://us.api.openai.com/v1"),
+    )
+    .unwrap();
+
+    let cfg = read_codex_config(&config_path);
+    assert_eq!(
+        cfg["openai_base_url"].as_str(),
+        Some("https://us.api.openai.com/v1")
+    );
 }
 
 #[test]
@@ -328,7 +217,7 @@ fn write_codex_mcp_servers_cli_server() {
             },
         },
     )]);
-    prepare_codex_config_toml(&config_path, &working_dir, &servers, None).unwrap();
+    prepare_codex_config_toml(&config_path, &working_dir, &servers, None, None).unwrap();
 
     let cfg = read_codex_config(&config_path);
     let mcp = &cfg["mcp_servers"]["my-mcp"];
@@ -359,7 +248,7 @@ fn write_codex_mcp_servers_sse_server() {
             },
         },
     )]);
-    prepare_codex_config_toml(&config_path, &working_dir, &servers, None).unwrap();
+    prepare_codex_config_toml(&config_path, &working_dir, &servers, None, None).unwrap();
 
     let cfg = read_codex_config(&config_path);
     let mcp = &cfg["mcp_servers"]["remote-mcp"];
@@ -385,7 +274,7 @@ fn write_codex_mcp_servers_cli_server_with_cwd() {
             },
         },
     )]);
-    prepare_codex_config_toml(&config_path, &working_dir, &servers, None).unwrap();
+    prepare_codex_config_toml(&config_path, &working_dir, &servers, None, None).unwrap();
 
     let cfg = read_codex_config(&config_path);
     let mcp = &cfg["mcp_servers"]["my-mcp"];
@@ -411,7 +300,7 @@ fn write_codex_mcp_servers_cli_server_without_cwd_omits_key() {
             },
         },
     )]);
-    prepare_codex_config_toml(&config_path, &working_dir, &servers, None).unwrap();
+    prepare_codex_config_toml(&config_path, &working_dir, &servers, None, None).unwrap();
 
     let cfg = read_codex_config(&config_path);
     let mcp = &cfg["mcp_servers"]["my-mcp"];
@@ -429,8 +318,14 @@ fn prepare_codex_config_toml_writes_model_when_specified() {
     let working_dir = tmp.path().join("workspace");
     fs::create_dir_all(&working_dir).unwrap();
 
-    prepare_codex_config_toml(&config_path, &working_dir, &HashMap::new(), Some("gpt-5.5"))
-        .unwrap();
+    prepare_codex_config_toml(
+        &config_path,
+        &working_dir,
+        &HashMap::new(),
+        Some("gpt-5.5"),
+        None,
+    )
+    .unwrap();
 
     let cfg = read_codex_config(&config_path);
     assert_eq!(cfg["model"].as_str(), Some("gpt-5.5"));
@@ -449,8 +344,14 @@ fn prepare_codex_config_toml_writes_model_migration_for_older_model() {
     let working_dir = tmp.path().join("workspace");
     fs::create_dir_all(&working_dir).unwrap();
 
-    prepare_codex_config_toml(&config_path, &working_dir, &HashMap::new(), Some("gpt-5.2"))
-        .unwrap();
+    prepare_codex_config_toml(
+        &config_path,
+        &working_dir,
+        &HashMap::new(),
+        Some("gpt-5.2"),
+        None,
+    )
+    .unwrap();
 
     let cfg = read_codex_config(&config_path);
     assert_eq!(cfg["model"].as_str(), Some("gpt-5.2"));
@@ -469,8 +370,14 @@ fn prepare_codex_config_toml_skips_model_for_default_sentinel() {
     let working_dir = tmp.path().join("workspace");
     fs::create_dir_all(&working_dir).unwrap();
 
-    prepare_codex_config_toml(&config_path, &working_dir, &HashMap::new(), Some("default"))
-        .unwrap();
+    prepare_codex_config_toml(
+        &config_path,
+        &working_dir,
+        &HashMap::new(),
+        Some("default"),
+        None,
+    )
+    .unwrap();
 
     let cfg = read_codex_config(&config_path);
     assert!(
@@ -492,7 +399,7 @@ fn prepare_codex_config_toml_skips_model_when_none() {
     let working_dir = tmp.path().join("workspace");
     fs::create_dir_all(&working_dir).unwrap();
 
-    prepare_codex_config_toml(&config_path, &working_dir, &HashMap::new(), None).unwrap();
+    prepare_codex_config_toml(&config_path, &working_dir, &HashMap::new(), None, None).unwrap();
 
     let cfg = read_codex_config(&config_path);
     assert!(

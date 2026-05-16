@@ -122,3 +122,57 @@ fn llm_info_round_trip_serializes_and_deserializes() {
 
     assert_eq!(info, round_tripped);
 }
+
+#[test]
+fn local_codex_model_is_inserted_first_and_defaulted() {
+    let mut models = ModelsByFeature::default();
+    models.set_local_codex_model_enabled(true);
+
+    let local_id: LLMId = local_codex::MODEL_ID.to_owned().into();
+
+    assert_eq!(models.agent_mode.default_id, local_id);
+    assert_eq!(models.agent_mode.choices[0].id, local_id);
+    assert_eq!(
+        models.agent_mode.choices[0].display_name,
+        local_codex::MODEL_DISPLAY_NAME
+    );
+    assert_eq!(models.coding.default_id, local_id);
+    assert_eq!(models.coding.choices[0].id, local_id);
+    assert_eq!(models.cli_agent.as_ref().unwrap().default_id, local_id);
+    assert_eq!(models.cli_agent.as_ref().unwrap().choices[0].id, local_id);
+
+    models.set_local_codex_model_enabled(true);
+    assert_eq!(
+        models
+            .agent_mode
+            .choices
+            .iter()
+            .filter(|info| info.id == local_id)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn local_codex_model_is_removed_when_disabled() {
+    let mut models = ModelsByFeature::default();
+    models.set_local_codex_model_enabled(true);
+    models.set_local_codex_model_enabled(false);
+
+    let local_id: LLMId = local_codex::MODEL_ID.to_owned().into();
+
+    assert_ne!(models.agent_mode.default_id, local_id);
+    assert!(models
+        .agent_mode
+        .choices
+        .iter()
+        .all(|info| info.id != local_id));
+    assert!(models.coding.choices.iter().all(|info| info.id != local_id));
+    assert!(models
+        .cli_agent
+        .as_ref()
+        .unwrap()
+        .choices
+        .iter()
+        .all(|info| info.id != local_id));
+}

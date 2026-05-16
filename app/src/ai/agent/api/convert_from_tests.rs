@@ -6,6 +6,7 @@ use crate::ai::agent::task::TaskId;
 use crate::ai::agent::{
     AIAgentActionType, AIAgentOutputMessageType, LifecycleEventType, StartAgentExecutionMode,
 };
+use crate::ai::local_codex::DISPLAY_ONLY_TOOL_CALL_PREFIX;
 use ai::agent::action::AskUserQuestionType;
 use ai::skills::SkillReference;
 use warp_multi_agent_api as api;
@@ -99,6 +100,31 @@ fn upload_artifact_tool_call_message(path: &str, description: &str) -> api::Mess
                         file_path: path.to_string(),
                     }),
                     description: description.to_string(),
+                },
+            )),
+        })),
+        request_id: "request-id".to_string(),
+        timestamp: None,
+    }
+}
+
+fn run_shell_tool_call_message(tool_call_id: &str, command: &str) -> api::Message {
+    api::Message {
+        id: "message-id".to_string(),
+        task_id: "task-id".to_string(),
+        server_message_data: String::new(),
+        citations: vec![],
+        message: Some(api::message::Message::ToolCall(api::message::ToolCall {
+            tool_call_id: tool_call_id.to_string(),
+            tool: Some(api::message::tool_call::Tool::RunShellCommand(
+                api::message::tool_call::RunShellCommand {
+                    command: command.to_string(),
+                    is_read_only: false,
+                    uses_pager: false,
+                    citations: vec![],
+                    is_risky: false,
+                    wait_until_complete_value: None,
+                    risk_category: 0,
                 },
             )),
         })),
@@ -364,6 +390,48 @@ fn converts_upload_artifact_tool_call_to_action() {
         description.as_deref(),
         Some("Build output for the latest run")
     );
+}
+
+#[test]
+fn local_codex_display_tool_call_does_not_require_result() {
+    let task_id = TaskId::new("task-id".to_string());
+    let message = run_shell_tool_call_message(
+        &format!("{DISPLAY_ONLY_TOOL_CALL_PREFIX}command-1"),
+        "echo already-ran",
+    );
+
+    let output = message
+        .to_client_output_message(ConversionParams {
+            task_id: &task_id,
+            current_todo_list: None,
+            active_code_review: None,
+        })
+        .expect("conversion should succeed");
+
+    match output {
+        MaybeAIAgentOutputMessage::Message(output) => match output.message {
+            AIAgentOutputMessageType::Action(action) => {
+                assert_eq!(action.task_id, task_id);
+                assert_eq!(
+                    action.action,
+                    AIAgentActionType::RequestCommandOutput {
+                        command: "echo already-ran".to_string(),
+                        is_read_only: Some(false),
+                        rationale: None,
+                        uses_pager: Some(false),
+                        is_risky: Some(false),
+                        wait_until_completion: true,
+                        citations: vec![],
+                    }
+                );
+                assert!(!action.requires_result);
+            }
+            other => panic!("Expected action message, got {other:?}"),
+        },
+        MaybeAIAgentOutputMessage::NoClientRepresentation => {
+            panic!("Expected display-only command to produce a client action")
+        }
+    }
 }
 
 #[test]

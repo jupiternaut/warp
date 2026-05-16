@@ -19,6 +19,19 @@
 #ifndef TargetProfileDir
   #define TargetProfileDir "target\release-lto-debug_assertions"
 #endif
+#ifndef UrlScheme
+  #define UrlScheme \
+    (ReleaseChannel == "stable") ? "warp" : \
+    ((ReleaseChannel == "dev") ? "warpdev" : \
+    ((ReleaseChannel == "preview") ? "warppreview" : \
+    ((ReleaseChannel == "local") ? "warplocal" : \
+    ((ReleaseChannel == "integration") ? "warpintegration" : \
+    ((ReleaseChannel == "oss") ? "warposs" : \
+    "warp")))))
+#endif
+#ifndef UsePreviousAppDir
+  #define UsePreviousAppDir "yes"
+#endif
 #define AssetsDir "..\..\app\assets\windows"
 
 // The mutex name must match what the Rust app creates in single_instance_manager.rs:
@@ -46,6 +59,7 @@ AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
 AppUpdatesURL={#MyAppURL}
 DefaultDirName={autopf}\{#MyAppName}
+UsePreviousAppDir={#UsePreviousAppDir}
 ArchitecturesAllowed={#Arch}
 ArchitecturesInstallIn64BitMode={#Arch}
 DisableProgramGroupPage=yes
@@ -112,22 +126,35 @@ Root: HKCU; Subkey: "SOFTWARE\Warp.dev\{#MyAppName}"; Flags: uninsdeletekey
 ; cleanup "Open Warp Here" registry entries
 Root: HKA; Subkey: "Software\Classes\Directory\shell\{#MyAppName}"; Flags: deletekey
 Root: HKA; Subkey: "Software\Classes\Directory\Background\shell\{#MyAppName}"; Flags: deletekey
+#ifdef LegacyAppName
+Root: HKA; Subkey: "Software\Classes\Directory\shell\{#LegacyAppName}"; Flags: deletekey
+Root: HKA; Subkey: "Software\Classes\Directory\Background\shell\{#LegacyAppName}"; Flags: deletekey
+Root: HKA; Subkey: "Software\Classes\Directory\shell\{#LegacyAppName}Tab"; Flags: deletekey
+Root: HKA; Subkey: "Software\Classes\Directory\Background\shell\{#LegacyAppName}Tab"; Flags: deletekey
+Root: HKA; Subkey: "Software\Classes\Directory\shell\{#LegacyAppName}Window"; Flags: deletekey
+Root: HKA; Subkey: "Software\Classes\Directory\Background\shell\{#LegacyAppName}Window"; Flags: deletekey
+#endif
 ; Add "Open Warp in new tab" to directory context menu
 Root: HKA; Subkey: "Software\Classes\Directory\shell\{#MyAppName}Tab"; ValueType: string; ValueName: ""; ValueData: "Open {#MyAppName} in new tab"; Flags: uninsdeletekey
 Root: HKA; Subkey: "Software\Classes\Directory\shell\{#MyAppName}Tab"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\icon.ico"
-Root: HKA; Subkey: "Software\Classes\Directory\shell\{#MyAppName}Tab\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""{#MyAppName}://action/new_tab?path=%1"""
+Root: HKA; Subkey: "Software\Classes\Directory\shell\{#MyAppName}Tab\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""{#UrlScheme}://action/new_tab?path=%1"""
 ; Add "Open Warp in new tab" to directory background context menu
 Root: HKA; Subkey: "Software\Classes\Directory\Background\shell\{#MyAppName}Tab"; ValueType: string; ValueName: ""; ValueData: "Open {#MyAppName} in new tab"; Flags: uninsdeletekey
 Root: HKA; Subkey: "Software\Classes\Directory\Background\shell\{#MyAppName}Tab"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\icon.ico"
-Root: HKA; Subkey: "Software\Classes\Directory\Background\shell\{#MyAppName}Tab\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""{#MyAppName}://action/new_tab?path=%V"""
+Root: HKA; Subkey: "Software\Classes\Directory\Background\shell\{#MyAppName}Tab\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""{#UrlScheme}://action/new_tab?path=%V"""
 ; Add "Open Warp in new window" to directory context menu
 Root: HKA; Subkey: "Software\Classes\Directory\shell\{#MyAppName}Window"; ValueType: string; ValueName: ""; ValueData: "Open {#MyAppName} in new window"; Flags: uninsdeletekey
 Root: HKA; Subkey: "Software\Classes\Directory\shell\{#MyAppName}Window"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\icon.ico"
-Root: HKA; Subkey: "Software\Classes\Directory\shell\{#MyAppName}Window\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""{#MyAppName}://action/new_window?path=%1"""
+Root: HKA; Subkey: "Software\Classes\Directory\shell\{#MyAppName}Window\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""{#UrlScheme}://action/new_window?path=%1"""
 ; Add "Open Warp in new window" to directory background context menu
 Root: HKA; Subkey: "Software\Classes\Directory\Background\shell\{#MyAppName}Window"; ValueType: string; ValueName: ""; ValueData: "Open {#MyAppName} in new window"; Flags: uninsdeletekey
 Root: HKA; Subkey: "Software\Classes\Directory\Background\shell\{#MyAppName}Window"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\icon.ico"
-Root: HKA; Subkey: "Software\Classes\Directory\Background\shell\{#MyAppName}Window\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""{#MyAppName}://action/new_window?path=%V"""
+Root: HKA; Subkey: "Software\Classes\Directory\Background\shell\{#MyAppName}Window\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""{#UrlScheme}://action/new_window?path=%V"""
+
+#ifdef LegacyAppName
+[InstallDelete]
+Type: filesandordirs; Name: "{autopf}\{#LegacyAppName}"
+#endif
 
 [Tasks]
 Name: addToPath; Description: "Add Warp to PATH"

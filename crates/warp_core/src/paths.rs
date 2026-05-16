@@ -165,6 +165,11 @@ pub fn secure_state_dir() -> Option<PathBuf> {
     }
 
     #[cfg(target_os = "macos")]
+    if ChannelState::data_profile().is_some() || ChannelState::channel() == Channel::Oss {
+        return None;
+    }
+
+    #[cfg(target_os = "macos")]
     if let Some(app_group_root) = app_group_container_path() {
         // The macOS project_path is the bundle ID (i.e. `dev.warp.Warp-Stable`).
         let project_dirs = project_dirs()?;

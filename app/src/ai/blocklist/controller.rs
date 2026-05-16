@@ -2647,7 +2647,13 @@ impl BlocklistAIController {
                         ..
                     } = &exchange.output_status
                     {
-                        actions_to_queue.extend(output.get().actions().cloned());
+                        actions_to_queue.extend(
+                            output
+                                .get()
+                                .actions()
+                                .filter(|action| action.requires_result)
+                                .cloned(),
+                        );
                     }
                 }
 

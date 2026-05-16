@@ -798,6 +798,7 @@ fn run_internal(mut launch_mode: LaunchMode) -> Result<()> {
     }
 
     timer.mark_interval_end("LOG_FILE_SETUP_COMPLETE");
+    crate::ai::local_codex::log_startup_state();
 
     #[cfg(windows)]
     platform::windows::check_redirection_guard();

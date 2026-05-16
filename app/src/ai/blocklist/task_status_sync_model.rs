@@ -4,6 +4,7 @@ use super::history_model::{
 use crate::ai::agent::conversation::{AIConversation, AIConversationId, ConversationStatus};
 use crate::ai::agent::{AIAgentOutputStatus, FinishedAIAgentOutput, RenderableAIError};
 use crate::ai::ambient_agents::AmbientAgentTaskId;
+use crate::ai::local_codex;
 use crate::server::server_api::ai::{AIClient, TaskStatusUpdate};
 use crate::server::server_api::ServerApiProvider;
 use crate::terminal::cli_agent_sessions::{
@@ -154,6 +155,10 @@ impl TaskStatusSyncModel {
             if conversation.is_remote_child() {
                 return;
             }
+            if is_local_codex_conversation(conversation) {
+                log::warn!("TaskStatusSyncModel: skipping local Codex task status sync");
+                return;
+            }
             let Some(task_id) = conversation.task_id() else {
                 return;
             };
@@ -201,6 +206,12 @@ impl TaskStatusSyncModel {
             |_, _, _| {},
         );
     }
+}
+
+fn is_local_codex_conversation(conversation: &AIConversation) -> bool {
+    conversation
+        .server_conversation_token()
+        .is_some_and(|token| local_codex::is_local_conversation_token(token.as_str()))
 }
 
 impl Entity for TaskStatusSyncModel {

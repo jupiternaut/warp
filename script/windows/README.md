@@ -71,3 +71,50 @@ convert 16x16.png 32x32.png 48x48.png 64x64.png 256x256.png icon.ico
 
 Note that sizes above 256x256 are not supported.
 See the [Inno Setup docs](https://jrsoftware.org/ishelp/index.php?topic=setup_setupiconfile).
+
+## Building WarpCodexOss
+
+WarpCodexOss is the OSS Windows package with the local Codex OAuth bridge enabled by default.
+It keeps the `oss` release channel, `warposs://` URL scheme, and `warp-oss.exe` binary, but the
+installed app and setup executable are named `WarpCodexOss`.
+
+Prerequisites on Windows x64:
+* Rust with the `x86_64-pc-windows-msvc` target.
+* Visual Studio Build Tools with MSVC and Windows SDK.
+* Inno Setup Compiler on PATH as `ISCC`.
+* Codex CLI installed separately and logged in with ChatGPT OAuth.
+
+Check Codex CLI without changing any files:
+
+```powershell
+.\script\windows\check_codex.ps1
+```
+
+Generate a token-safe validation JSON record for an install report:
+
+```powershell
+.\script\windows\check_codex.ps1 -Json
+```
+
+Build-check the Windows app:
+
+```powershell
+.\script\windows\bundle.ps1 -CHANNEL oss -ARCH x64 -LOCAL_CODEX -CHECK_ONLY
+```
+
+Build the installer:
+
+```powershell
+.\script\windows\bundle.ps1 -CHANNEL oss -ARCH x64 -LOCAL_CODEX
+```
+
+Expected installer output:
+
+```text
+script\windows\Output\WarpCodexOssSetup.exe
+```
+
+After installing, `/MODEL` should show `Local Codex (ChatGPT OAuth)` as selected and Agent
+responses should display `Local Codex / 0 Warp credits`. If Codex is missing or logged out,
+WarpCodexOss reports a local Codex error and asks the user to run `codex` or
+`codex login --device-auth`; it does not read or copy Codex OAuth tokens.

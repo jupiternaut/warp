@@ -3469,6 +3469,7 @@ impl AuthOnboardingState {
             && !is_anonymous
             && !has_completed_local_onboarding
             && FeatureFlag::AgentOnboarding.is_enabled()
+            && !crate::ai::local_codex::enabled()
         {
             self.try_open_onboarding_slides(ctx);
         }

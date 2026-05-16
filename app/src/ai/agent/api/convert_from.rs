@@ -31,6 +31,7 @@ use warp_core::channel::ChannelState;
 use warp_multi_agent_api as api;
 
 use crate::ai::agent::{AIAgentAttachment, UserQueryMode};
+use crate::ai::local_codex::DISPLAY_ONLY_TOOL_CALL_PREFIX;
 
 impl TryFrom<api::Attachment> for AIAgentAttachment {
     type Error = anyhow::Error;
@@ -683,7 +684,7 @@ impl ConvertAPIToolCallToAIAgentAction for api::message::ToolCall {
                 id: self.tool_call_id.clone().into(),
                 task_id: params.task_id.clone(),
                 action,
-                requires_result: true,
+                requires_result: !self.tool_call_id.starts_with(DISPLAY_ONLY_TOOL_CALL_PREFIX),
             }))
         };
 

@@ -16,6 +16,11 @@ Param (
     [String]$RELEASE_TAG = '',
     [String]$FEATURES = 'release_bundle,crash_reporting,gui',
 
+    # Builds the OSS channel with the local Codex OAuth bridge branding.
+    # This keeps ReleaseChannel=oss and the warp-oss.exe binary, but changes the
+    # installed app and installer names to WarpCodexOss.
+    [Switch]$LOCAL_CODEX = $False,
+
     # Builds only the Warp binary, skips the installer.
     [Switch]$SKIP_BUILD_INSTALLER = $False,
     # Builds only the installer, skips the Warp binary. Use this if the Warp
@@ -62,6 +67,17 @@ $ErrorActionPreference = 'Stop'
 $WORKSPACE_ROOT_DIR = $(Get-Location).Path
 $CARGO_TARGET_DIR = $WORKSPACE_ROOT_DIR + '\target'
 $WINDOWS_INSTALLER_DIR = $WORKSPACE_ROOT_DIR + '\script\windows'
+
+if ($LOCAL_CODEX) {
+    if ("$CHANNEL" -ne 'oss') {
+        Write-Error '-LOCAL_CODEX is only supported with -CHANNEL oss.'
+        exit 1
+    }
+    if ("$ARCH" -ne 'x64') {
+        Write-Error 'WarpCodexOss Windows v1 only supports -ARCH x64.'
+        exit 1
+    }
+}
 
 if ($DEBUG_BUILD) {
     $CARGO_PROFILE = 'dev'
@@ -116,6 +132,19 @@ if ("$CHANNEL" -eq 'local') {
     # The OSS channel does not ship Sentry, so drop the crash_reporting feature
     # (which would otherwise pull in the Sentry SDK as a dependency).
     $FEATURES = 'release_bundle,gui,nld_improvements'
+}
+
+if ($LOCAL_CODEX) {
+    $APP_NAME = 'WarpCodexOss'
+}
+
+$URL_SCHEME = switch ($CHANNEL) {
+    'stable' { 'warp' }
+    'dev' { 'warpdev' }
+    'preview' { 'warppreview' }
+    'local' { 'warplocal' }
+    'oss' { 'warposs' }
+    default { 'warpintegration' }
 }
 
 $BINARY_PATH = "$CARGO_TARGET_OUTPUT_DIR\$BINARY_NAME"
@@ -190,6 +219,7 @@ Write-Output 'Building Warp installer'
 $ISCC_ARGS = @(
     "$WINDOWS_INSTALLER_DIR\windows-installer.iss",
     "/DReleaseChannel=$CHANNEL",
+    "/DUrlScheme=$URL_SCHEME",
     "/DMyAppExeName=$BINARY_NAME",
     "/DTargetProfileDir=$CARGO_TARGET_OUTPUT_DIR",
     "/DMyAppName=$APP_NAME",
@@ -197,6 +227,10 @@ $ISCC_ARGS = @(
     "/DArch=$ARCH",
     "/DOutputName=$INSTALLER_NAME"
 )
+if ($LOCAL_CODEX) {
+    $ISCC_ARGS += '/DLegacyAppName=WarpOss'
+    $ISCC_ARGS += '/DUsePreviousAppDir=no'
+}
 # Also accept the sign tool command via env var
 if (-not $SIGN_TOOL_CMD -and $env:SIGN_TOOL_CMD) {
     $SIGN_TOOL_CMD = $env:SIGN_TOOL_CMD

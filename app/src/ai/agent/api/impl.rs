@@ -136,6 +136,13 @@ pub async fn generate_multi_agent_output(
         mcp_context: params.mcp_context.map(Into::into),
     };
 
+    if crate::ai::local_codex::enabled() {
+        crate::ai::local_codex::log_local_route("generate_multi_agent_output");
+        return Ok(
+            crate::ai::local_codex::generate_multi_agent_response_stream(request, cancellation_rx),
+        );
+    }
+
     let response_stream = server_api.generate_multi_agent_output(&request).await;
     match response_stream {
         Ok(stream) => {

@@ -1030,6 +1030,14 @@ impl ServerApi {
         request: &GenerateAIInputSuggestionsRequest,
     ) -> Result<generate_ai_input_suggestions::GenerateAIInputSuggestionsResponseV2, AIApiError>
     {
+        if crate::ai::local_codex::enabled() {
+            crate::ai::local_codex::log_local_route("generate_ai_input_suggestions");
+            return crate::ai::local_codex::generate_input_suggestions(request)
+                .await
+                .map_err(AIApiError::Other);
+        }
+        crate::ai::local_codex::log_warp_route("generate_ai_input_suggestions");
+
         let auth_token = self.get_or_refresh_access_token().await?;
 
         let request_builder = self.client.post(format!(
@@ -1080,6 +1088,14 @@ impl ServerApi {
         &self,
         request: &GenerateAMQuerySuggestionsRequest,
     ) -> Result<generate_am_query_suggestions::GenerateAMQuerySuggestionsResponse, AIApiError> {
+        if crate::ai::local_codex::enabled() {
+            crate::ai::local_codex::log_local_route("generate_am_query_suggestions");
+            return crate::ai::local_codex::generate_am_query_suggestions(request)
+                .await
+                .map_err(AIApiError::Other);
+        }
+        crate::ai::local_codex::log_warp_route("generate_am_query_suggestions");
+
         let auth_token = self.get_or_refresh_access_token().await?;
 
         cfg_if::cfg_if! {
@@ -1191,6 +1207,15 @@ impl ServerApi {
         request: &warp_multi_agent_api::Request,
     ) -> std::result::Result<AIOutputStream<warp_multi_agent_api::ResponseEvent>, Arc<AIApiError>>
     {
+        if crate::ai::local_codex::enabled() {
+            crate::ai::local_codex::log_local_route("generate_multi_agent_output");
+            return match crate::ai::local_codex::generate_multi_agent_output(request).await {
+                Ok(events) => Ok(crate::ai::local_codex::stream_from_events(events)),
+                Err(err) => Err(Arc::new(AIApiError::Other(err))),
+            };
+        }
+        crate::ai::local_codex::log_warp_route("generate_multi_agent_output");
+
         let auth_token = self
             .get_or_refresh_access_token()
             .await

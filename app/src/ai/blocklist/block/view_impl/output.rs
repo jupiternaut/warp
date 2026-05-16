@@ -3224,6 +3224,13 @@ fn render_usage_button(props: Props, app: &AppContext) -> Box<dyn Element> {
     let Some(conversation) = props.model.conversation(app) else {
         return Empty::new().finish();
     };
+    let did_last_block_use_zero_warp_credits = conversation
+        .credits_spent_for_last_block()
+        .is_some_and(|credits| credits.abs() < f32::EPSILON);
+    let is_local_codex_conversation = conversation
+        .server_conversation_token()
+        .is_some_and(|token| crate::ai::local_codex::is_local_conversation_token(token.as_str()))
+        || (crate::ai::local_codex::enabled() && did_last_block_use_zero_warp_credits);
 
     // If this conversation has no usage metadata (e.g. a forked conversation from
     // mid-way through a prior conversation where the server did not send
@@ -3231,7 +3238,8 @@ fn render_usage_button(props: Props, app: &AppContext) -> Box<dyn Element> {
     let has_any_usage = conversation.credits_spent() > 0.0
         || conversation.credits_spent_for_last_block().is_some()
         || !conversation.token_usage().is_empty()
-        || conversation.tool_usage_metadata().total_tool_calls() > 0;
+        || conversation.tool_usage_metadata().total_tool_calls() > 0
+        || is_local_codex_conversation;
     if !has_any_usage {
         return Empty::new().finish();
     }
@@ -3246,13 +3254,18 @@ fn render_usage_button(props: Props, app: &AppContext) -> Box<dyn Element> {
     };
 
     let total_credits_spent = conversation.credits_spent();
-    let mut credit_usage_text = format_credits(total_credits_spent);
+    let mut credit_usage_text = if is_local_codex_conversation {
+        "Local Codex / 0 Warp credits".to_string()
+    } else {
+        format_credits(total_credits_spent)
+    };
     if let Some(credits_spent_for_last_block) = conversation.credits_spent_for_last_block() {
         // Only show the credits spent for the last block if it is different from the total credits spent
         // and we spent a non-zero amount of credits for the last block.
         // Avoid showing the credits spent for the last block if the request failed, as we refund user
         // credits in that case (so no credits were in fact spent).
-        if credits_spent_for_last_block > 0.0
+        if !is_local_codex_conversation
+            && credits_spent_for_last_block > 0.0
             && total_credits_spent != credits_spent_for_last_block
             && props.model.status(app).error().is_none()
         {

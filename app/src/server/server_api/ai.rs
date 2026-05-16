@@ -1190,6 +1190,24 @@ impl AIClient for ServerApi {
         // TODO: use relevant context from RequestContext and deprecate usage of ai_execution_context
         _ai_execution_context: Option<WarpAiExecutionContext>,
     ) -> Result<Vec<AIGeneratedCommand>, GenerateCommandsFromNaturalLanguageError> {
+        if crate::ai::local_codex::enabled() {
+            crate::ai::local_codex::log_local_route("generate_commands_from_natural_language");
+            return crate::ai::local_codex::generate_commands(&prompt)
+                .await
+                .map(|commands| {
+                    commands
+                        .into_iter()
+                        .map(crate::ai::local_codex::into_graphql_generated_command)
+                        .map(Into::into)
+                        .collect_vec()
+                })
+                .map_err(|err| {
+                    log::warn!("Local Codex command generation failed: {err:?}");
+                    GenerateCommandsFromNaturalLanguageError::AiProviderError
+                });
+        }
+        crate::ai::local_codex::log_warp_route("generate_commands_from_natural_language");
+
         let default_err = GenerateCommandsFromNaturalLanguageError::Other;
 
         let variables = GenerateCommandsVariables {
@@ -1229,6 +1247,12 @@ impl AIClient for ServerApi {
         // TODO: use relevant context from RequestContext and deprecate usage of ai_execution_context
         _ai_execution_context: Option<WarpAiExecutionContext>,
     ) -> anyhow::Result<GenerateDialogueResult> {
+        if crate::ai::local_codex::enabled() {
+            crate::ai::local_codex::log_local_route("generate_dialogue_answer");
+            return crate::ai::local_codex::generate_dialogue_answer(transcript, prompt).await;
+        }
+        crate::ai::local_codex::log_warp_route("generate_dialogue_answer");
+
         let graphql_transcript: Vec<TranscriptPartGraphql> = transcript
             .into_iter()
             .map(|part| TranscriptPartGraphql {
@@ -1281,6 +1305,12 @@ impl AIClient for ServerApi {
         &self,
         command: String,
     ) -> Result<GeneratedCommandMetadata, GeneratedCommandMetadataError> {
+        if crate::ai::local_codex::enabled() {
+            crate::ai::local_codex::log_local_route("generate_metadata_for_command");
+            return crate::ai::local_codex::generate_metadata_for_command(command).await;
+        }
+        crate::ai::local_codex::log_warp_route("generate_metadata_for_command");
+
         let default_err = GeneratedCommandMetadataError::Other;
         let variables = GenerateMetadataForCommandVariables {
             input: GenerateMetadataForCommandInput { command },
@@ -2250,6 +2280,25 @@ impl AIClient for ServerApi {
         &self,
         request: GenerateCodeReviewContentRequest,
     ) -> Result<GenerateCodeReviewContentResponse, anyhow::Error> {
+        if crate::ai::local_codex::enabled() {
+            crate::ai::local_codex::log_local_route("generate_code_review_content");
+            let GenerateCodeReviewContentRequest {
+                output_type,
+                diff,
+                branch_name,
+                commit_messages,
+            } = request;
+            return crate::ai::local_codex::generate_code_review_content(
+                output_type,
+                diff,
+                branch_name,
+                commit_messages,
+            )
+            .await
+            .map(|content| GenerateCodeReviewContentResponse { content });
+        }
+        crate::ai::local_codex::log_warp_route("generate_code_review_content");
+
         let auth_token = self.get_or_refresh_access_token().await?;
         let request_builder = self.client.post(format!(
             "{}/ai/generate_code_review_content",

@@ -1,14 +1,15 @@
 use std::collections::HashMap;
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(not(target_family = "wasm"))]
 use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+#[cfg(not(target_family = "wasm"))]
+use command::blocking::Command;
 use parking_lot::Mutex;
-use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
 use tempfile::NamedTempFile;
 use uuid::Uuid;
 use warp_cli::agent::Harness;
@@ -30,9 +31,9 @@ use super::codex_transcript::{
     codex_sessions_root, find_session_file, parse_session_meta, write_envelope, CodexResumeInfo,
     CodexTranscriptEnvelope,
 };
-use super::json_utils::read_json_file_or_default;
 use super::{
-    write_temp_file, HarnessRunner, JSONMCPServer, ResumePayload, SavePoint, ThirdPartyHarness,
+    validate_cli_installed, write_temp_file, HarnessRunner, JSONMCPServer, ResumePayload,
+    SavePoint, ThirdPartyHarness,
 };
 
 pub(crate) struct CodexHarness;
@@ -41,6 +42,10 @@ pub(crate) struct CodexHarness;
 const CODEX_CLI_FORMAT: &str = "codex_cli";
 /// Slash command Codex's TUI recognises as a graceful shutdown.
 const CODEX_EXIT_COMMAND: &str = "/exit";
+/// Warp's external conversation endpoint can reject local harness runs that are
+/// not executing inside a Warp-managed workload. In that case, keep the local
+/// Codex CLI run usable and skip server transcript uploads for this run.
+const LOCAL_ONLY_WORKLOAD_TOKEN_ERROR: &str = "valid workload token required";
 
 #[cfg_attr(not(target_family = "wasm"), async_trait)]
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
@@ -55,6 +60,12 @@ impl ThirdPartyHarness for CodexHarness {
 
     fn install_docs_url(&self) -> Option<&'static str> {
         Some("https://developers.openai.com/codex/cli")
+    }
+
+    fn validate(&self) -> Result<(), AgentDriverError> {
+        let cli = self.cli_agent().command_prefix();
+        validate_cli_installed(cli, self.install_docs_url())?;
+        validate_codex_login(cli)
     }
 
     /// Fetch the codex transcript for the current task's conversation and wrap it into a
@@ -86,15 +97,16 @@ impl ThirdPartyHarness for CodexHarness {
         server_api: Arc<ServerApi>,
         terminal_driver: ModelHandle<TerminalDriver>,
         resume: Option<ResumePayload>,
-        resolved_env_vars: &HashMap<OsString, OsString>,
+        _resolved_env_vars: &HashMap<OsString, OsString>,
         resolved_mcp_servers: &HashMap<String, JSONMCPServer>,
         third_party_harness_model_id: Option<&str>,
     ) -> Result<Box<dyn HarnessRunner>, AgentDriverError> {
+        self.validate()?;
+
         // Prepare the environment config files.
         prepare_codex_environment_config(
             working_dir,
             system_prompt,
-            resolved_env_vars,
             resolved_mcp_servers,
             third_party_harness_model_id,
         )
@@ -155,11 +167,74 @@ fn codex_command(cli_name: &str, session_id: Option<&Uuid>, prompt_path: &str) -
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
+fn validate_codex_login(cli_name: &str) -> Result<(), AgentDriverError> {
+    let output = Command::new(cli_name)
+        .args(["login", "status"])
+        .output()
+        .map_err(|error| AgentDriverError::HarnessSetupFailed {
+            harness: cli_name.to_owned(),
+            reason: format!("Failed to run `{cli_name} login status`: {error}"),
+        })?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    Err(AgentDriverError::HarnessSetupFailed {
+        harness: cli_name.to_owned(),
+        reason: codex_login_status_failure_reason(
+            output.status.code(),
+            &output.stdout,
+            &output.stderr,
+        ),
+    })
+}
+
+#[cfg(target_family = "wasm")]
+fn validate_codex_login(cli_name: &str) -> Result<(), AgentDriverError> {
+    Err(AgentDriverError::HarnessSetupFailed {
+        harness: cli_name.to_owned(),
+        reason: "Codex CLI is not available in browser builds.".to_owned(),
+    })
+}
+
+fn codex_login_status_failure_reason(
+    exit_code: Option<i32>,
+    stdout: &[u8],
+    stderr: &[u8],
+) -> String {
+    let mut reason =
+        "Codex CLI is not logged in. Run `codex` or `codex login --device-auth` and authenticate with your ChatGPT account.".to_owned();
+
+    let details = [stdout, stderr]
+        .into_iter()
+        .filter_map(|bytes| {
+            let text = String::from_utf8_lossy(bytes);
+            let trimmed = text.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_owned())
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !details.is_empty() {
+        reason.push_str(&format!(" `codex login status` output: {details}"));
+    } else if let Some(code) = exit_code {
+        reason.push_str(&format!(" `codex login status` exited with code {code}."));
+    }
+
+    reason
+}
+
+fn should_run_codex_local_only(error: &anyhow::Error) -> bool {
+    error.to_string().contains(LOCAL_ONLY_WORKLOAD_TOKEN_ERROR)
+}
+
 enum CodexRunnerState {
     Preexec,
     Running {
         conversation_id: AIConversationId,
         block_id: BlockId,
+        upload_enabled: bool,
     },
 }
 
@@ -266,23 +341,31 @@ impl HarnessRunner for CodexHarnessRunner {
         foreground: &ModelSpawner<AgentDriver>,
     ) -> Result<CommandHandle, AgentDriverError> {
         // Resume runs reuse the prior server conversation id; fresh runs mint a new one.
-        let conversation_id = match self.preexisting_conversation_id {
+        let (conversation_id, upload_enabled) = match self.preexisting_conversation_id {
             Some(id) => {
                 log::info!("Resuming external conversation {id}");
-                id
+                (id, true)
             }
-            None => {
-                let id = self
-                    .client
-                    .create_external_conversation(CODEX_CLI_FORMAT)
-                    .await
-                    .map_err(|e| {
-                        log::error!("Failed to create external conversation: {e}");
-                        AgentDriverError::ConfigBuildFailed(e)
-                    })?;
-                log::info!("Created external conversation {id}");
-                id
-            }
+            None => match self
+                .client
+                .create_external_conversation(CODEX_CLI_FORMAT)
+                .await
+            {
+                Ok(id) => {
+                    log::info!("Created external conversation {id}");
+                    Ok((id, true))
+                }
+                Err(e) if should_run_codex_local_only(&e) => {
+                    log::warn!(
+                        "Falling back to local-only Codex conversation; transcript uploads disabled: {e}"
+                    );
+                    Ok((AIConversationId::new(), false))
+                }
+                Err(e) => {
+                    log::error!("Failed to create external conversation: {e}");
+                    Err(AgentDriverError::ConfigBuildFailed(e))
+                }
+            }?,
         };
 
         let command = self.command.clone();
@@ -297,6 +380,7 @@ impl HarnessRunner for CodexHarnessRunner {
         *self.state.lock() = CodexRunnerState::Running {
             conversation_id,
             block_id: command_handle.block_id().clone(),
+            upload_enabled,
         };
 
         Ok(command_handle)
@@ -359,7 +443,7 @@ impl HarnessRunner for CodexHarnessRunner {
             return Ok(());
         }
 
-        let (conversation_id, block_id) = match &*self.state.lock() {
+        let (conversation_id, block_id, upload_enabled) = match &*self.state.lock() {
             CodexRunnerState::Preexec => {
                 log::warn!("save_conversation called before start");
                 return Ok(());
@@ -367,8 +451,16 @@ impl HarnessRunner for CodexHarnessRunner {
             CodexRunnerState::Running {
                 conversation_id,
                 block_id,
-            } => (*conversation_id, block_id.clone()),
+                upload_enabled,
+            } => (*conversation_id, block_id.clone(), *upload_enabled),
         };
+
+        if !upload_enabled {
+            log::debug!(
+                "Skipping Codex transcript upload for local-only conversation {conversation_id}"
+            );
+            return Ok(());
+        }
 
         let session_id = self.session_id.get().copied();
         let rollout_path = self.resolve_transcript_path().await;
@@ -437,10 +529,7 @@ async fn upload_transcript(
 
 const CODEX_CONFIG_DIR: &str = ".codex";
 const CODEX_AGENTS_OVERRIDE_FILE_NAME: &str = "AGENTS.override.md";
-const CODEX_AUTH_FILE_NAME: &str = "auth.json";
 const CODEX_CONFIG_TOML_FILE_NAME: &str = "config.toml";
-const OPENAI_API_KEY_ENV: &str = "OPENAI_API_KEY";
-const CODEX_AUTH_MODE_API_KEY: &str = "apikey";
 /// Lowercase string Codex's `TrustLevel` enum serializes to (codex
 /// `protocol/src/config_types.rs::TrustLevel`).
 const CODEX_TRUST_LEVEL_TRUSTED: &str = "trusted";
@@ -456,15 +545,9 @@ const CODEX_MODEL_KEY: &str = "model";
 /// TODO: Ideally, we would make this server-driven so we don't depend on a client
 /// release to change this.
 const CODEX_MODEL_MIGRATIONS_TARGET: &str = "gpt-5.4";
-/// US data-residency endpoint. Our OpenAI keys are issued under a US-residency project,
-/// which rejects requests to the global host with `401 incorrect_hostname`.
-/// TODO(REMOTE-1509): plumb a region-tagged auth secret instead of hardcoding the URL.
-const CODEX_OPENAI_BASE_URL: &str = "https://us.api.openai.com/v1";
-
 fn prepare_codex_environment_config(
     working_dir: &Path,
     system_prompt: Option<&str>,
-    resolved_env_vars: &HashMap<OsString, OsString>,
     resolved_mcp_servers: &HashMap<String, JSONMCPServer>,
     third_party_harness_model_id: Option<&str>,
 ) -> Result<()> {
@@ -476,16 +559,12 @@ fn prepare_codex_environment_config(
         write_codex_agents_override(&codex_dir, prompt)?;
     }
 
-    match resolve_openai_api_key(resolved_env_vars) {
-        Some(api_key) => prepare_codex_auth(&codex_dir.join(CODEX_AUTH_FILE_NAME), &api_key)?,
-        None => log::info!("No OPENAI_API_KEY available; skipping Codex auth.json seed"),
-    }
-
     prepare_codex_config_toml(
         &codex_dir.join(CODEX_CONFIG_TOML_FILE_NAME),
         working_dir,
         resolved_mcp_servers,
         third_party_harness_model_id,
+        None,
     )?;
     Ok(())
 }
@@ -509,91 +588,12 @@ fn write_codex_agents_override(codex_dir: &Path, system_prompt: &str) -> Result<
     })
 }
 
-/// Mirrors the subset of Codex's `AuthDotJson` (codex `login/src/auth/storage.rs`) that we
-/// need to seed. Unknown fields (`tokens`, `last_refresh`, `agent_identity`, ...) are
-/// preserved via `extra` so we don't clobber an existing login.
-#[derive(Default, Deserialize, Serialize, Debug)]
-struct CodexAuthDotJson {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    auth_mode: Option<String>,
-    #[serde(
-        rename = "OPENAI_API_KEY",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
-    openai_api_key: Option<String>,
-    #[serde(flatten)]
-    extra: Map<String, Value>,
-}
-
-fn prepare_codex_auth(auth_path: &Path, api_key: &str) -> Result<()> {
-    let mut auth: CodexAuthDotJson = read_json_file_or_default(auth_path)?;
-    auth.openai_api_key = Some(api_key.to_owned());
-    if auth.auth_mode.is_none() {
-        auth.auth_mode = Some(CODEX_AUTH_MODE_API_KEY.to_owned());
-    }
-    write_codex_auth_json(auth_path, &auth)
-}
-
-/// Write Codex's `auth.json` with restrictive (0o600) permissions, mirroring how
-/// codex sets up this file itself.
-fn write_codex_auth_json(path: &Path, auth: &CodexAuthDotJson) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create {}", parent.display()))?;
-    }
-    let bytes = serde_json::to_vec_pretty(auth).context("Failed to serialize Codex auth.json")?;
-
-    #[cfg(unix)]
-    {
-        use std::io::Write as _;
-        use std::os::unix::fs::OpenOptionsExt;
-        use std::os::unix::fs::PermissionsExt;
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)
-            .with_context(|| format!("Failed to open {} for writing", path.display()))?;
-        file.set_permissions(fs::Permissions::from_mode(0o600))
-            .with_context(|| format!("Failed to set permissions on {}", path.display()))?;
-        file.write_all(&bytes)
-            .with_context(|| format!("Failed to write {}", path.display()))?;
-    }
-    #[cfg(not(unix))]
-    fs::write(path, &bytes).with_context(|| format!("Failed to write {}", path.display()))?;
-
-    Ok(())
-}
-
-/// Returns the OpenAI API key for Codex auth.
-///
-/// Checks the worker-injected process env first (not in the resolved map since
-/// `build_secret_env_vars` skips env vars already present in the process env),
-/// then falls back to the resolved secret env vars map.
-fn resolve_openai_api_key(resolved_env_vars: &HashMap<OsString, OsString>) -> Option<String> {
-    // Worker-injected process env wins.
-    if let Ok(value) = std::env::var(OPENAI_API_KEY_ENV) {
-        let trimmed = value.trim();
-        if !trimmed.is_empty() {
-            return Some(trimmed.to_owned());
-        }
-    }
-    // Otherwise use the resolved value from the secrets map.
-    resolved_env_vars
-        .get(OsStr::new(OPENAI_API_KEY_ENV))
-        .and_then(|v| v.to_str())
-        .map(|s| s.trim().to_owned())
-        .filter(|s| !s.is_empty())
-}
-
 /// Edit `~/.codex/config.toml` via `toml_edit` to seed the harness defaults
 /// while preserving anything that might already exist there. We handle:
 /// - project trust: for a working dir and all of its git repo subdirectories,
 ///   set the projects to `trusted`.
-/// - base URL: set `openai_base_url = "<US data-residency endpoint>"` so we
-///   hit the regional host our API keys require.
+/// - base URL: only set `openai_base_url` when an API-key-mode caller explicitly
+///   supplies one; OAuth mode leaves the user's Codex provider config intact.
 /// - model override: when a non-default `third_party_harness_model_id` is
 ///   supplied, write the top-level `model` key so Codex pins the chosen model
 ///   for new sessions.
@@ -602,6 +602,7 @@ fn prepare_codex_config_toml(
     working_dir: &Path,
     resolved_mcp_servers: &HashMap<String, JSONMCPServer>,
     third_party_harness_model_id: Option<&str>,
+    openai_base_url: Option<&str>,
 ) -> Result<()> {
     let existing = match fs::read_to_string(config_toml_path) {
         Ok(content) => content,
@@ -620,7 +621,9 @@ fn prepare_codex_config_toml(
         )
     })?;
 
-    set_codex_openai_base_url(&mut doc, CODEX_OPENAI_BASE_URL);
+    if let Some(base_url) = openai_base_url {
+        set_codex_openai_base_url(&mut doc, base_url);
+    }
     set_codex_model(&mut doc, third_party_harness_model_id);
 
     let canonical = working_dir.canonicalize().with_context(|| {

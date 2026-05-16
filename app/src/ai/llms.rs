@@ -9,6 +9,7 @@ use warp_core::user_preferences::GetUserPreferences;
 use warpui::{AppContext, Entity, EntityId, ModelContext, SingletonEntity};
 
 use crate::{
+    ai::local_codex,
     auth::{
         auth_manager::{AuthManager, AuthManagerEvent},
         AuthStateProvider,
@@ -386,6 +387,36 @@ impl AvailableLLMs {
             .expect("Default LLM ID must be present in choices")
     }
 
+    fn set_local_codex_model_enabled(&mut self, enabled: bool, make_default: bool) {
+        let local_id: LLMId = local_codex::MODEL_ID.to_owned().into();
+
+        if enabled {
+            if let Some(index) = self.choices.iter().position(|info| info.id == local_id) {
+                if index != 0 {
+                    let info = self.choices.remove(index);
+                    self.choices.insert(0, info);
+                }
+            } else {
+                self.choices.insert(0, local_codex_llm_info());
+            }
+
+            if make_default {
+                self.default_id = local_id.clone();
+            }
+            self.preferred_codex_model_id = Some(local_id);
+        } else {
+            self.choices.retain(|info| info.id != local_id);
+            if self.default_id == local_id {
+                if let Some(fallback) = self.choices.first() {
+                    self.default_id = fallback.id.clone();
+                }
+            }
+            if self.preferred_codex_model_id.as_ref() == Some(&local_id) {
+                self.preferred_codex_model_id = None;
+            }
+        }
+    }
+
     #[cfg(feature = "integration_tests")]
     pub fn new_for_test(llm_name: &str) -> Self {
         Self {
@@ -427,6 +458,54 @@ impl ModelsByFeature {
     /// any one of the metadata will be returned.
     fn info_for_id(&self, id: &LLMId) -> Option<&LLMInfo> {
         self.agent_mode.info_for_id(id)
+    }
+
+    fn with_current_local_codex_mode(mut self) -> Self {
+        self.set_local_codex_model_enabled(local_codex::enabled());
+        self
+    }
+
+    fn set_local_codex_model_enabled(&mut self, enabled: bool) {
+        self.agent_mode.set_local_codex_model_enabled(enabled, true);
+        self.coding.set_local_codex_model_enabled(enabled, true);
+
+        if enabled && self.cli_agent.is_none() {
+            self.cli_agent = Some(AvailableLLMs {
+                default_id: local_codex::MODEL_ID.to_owned().into(),
+                choices: vec![local_codex_llm_info()],
+                preferred_codex_model_id: Some(local_codex::MODEL_ID.to_owned().into()),
+            });
+        } else if let Some(cli_agent) = &mut self.cli_agent {
+            cli_agent.set_local_codex_model_enabled(enabled, true);
+            if cli_agent.choices.is_empty() {
+                self.cli_agent = None;
+            }
+        }
+    }
+}
+
+fn local_codex_llm_info() -> LLMInfo {
+    LLMInfo {
+        display_name: local_codex::MODEL_DISPLAY_NAME.to_owned(),
+        base_model_name: "Local Codex".to_owned(),
+        id: local_codex::MODEL_ID.to_owned().into(),
+        reasoning_level: None,
+        usage_metadata: LLMUsageMetadata {
+            request_multiplier: 1,
+            credit_multiplier: Some(0.0),
+        },
+        description: Some(local_codex::runner_description().to_owned()),
+        disable_reason: None,
+        vision_supported: false,
+        spec: Some(LLMSpec {
+            cost: 0.0,
+            quality: 0.8,
+            speed: 0.7,
+        }),
+        provider: LLMProvider::Unknown,
+        host_configs: HashMap::new(),
+        discount_percentage: None,
+        context_window: LLMContextWindow::default(),
     }
 }
 
@@ -556,7 +635,9 @@ pub struct LLMPreferences {
 
 impl LLMPreferences {
     pub fn new(ctx: &mut ModelContext<Self>) -> Self {
-        let models_by_feature = get_cached_models(ctx).unwrap_or_default();
+        let models_by_feature = get_cached_models(ctx)
+            .unwrap_or_default()
+            .with_current_local_codex_mode();
 
         ctx.subscribe_to_model(&NetworkStatus::handle(ctx), |me, event, ctx| {
             if let NetworkStatusEvent::NetworkStatusChanged {
@@ -616,6 +697,10 @@ impl LLMPreferences {
         app: &'a AppContext,
         terminal_view_id: Option<EntityId>,
     ) -> &'a LLMInfo {
+        if let Some(local_model) = self.local_codex_info(&self.models_by_feature.agent_mode) {
+            return local_model;
+        }
+
         self.get_preferred_base_model(app, terminal_view_id)
     }
 
@@ -649,6 +734,10 @@ impl LLMPreferences {
         app: &'a AppContext,
         terminal_view_id: Option<EntityId>,
     ) -> &'a LLMInfo {
+        if let Some(local_model) = self.local_codex_info(&self.models_by_feature.coding) {
+            return local_model;
+        }
+
         self.get_preferred_coding_model(app, terminal_view_id)
     }
 
@@ -699,6 +788,10 @@ impl LLMPreferences {
         app: &'a AppContext,
         terminal_view_id: Option<EntityId>,
     ) -> &'a LLMInfo {
+        if let Some(local_model) = self.local_codex_info(self.get_cli_agent_available()) {
+            return local_model;
+        }
+
         let profile = AIExecutionProfilesModel::as_ref(app).active_profile(terminal_view_id, app);
 
         let available = self.get_cli_agent_available();
@@ -758,6 +851,11 @@ impl LLMPreferences {
             .computer_use
             .as_ref()
             .unwrap_or_else(|| DEFAULT.get_or_init(default_computer_use_llms))
+    }
+
+    fn local_codex_info<'a>(&self, available: &'a AvailableLLMs) -> Option<&'a LLMInfo> {
+        local_codex::enabled()
+            .then(|| available.info_for_id(&local_codex::MODEL_ID.to_owned().into()))?
     }
 
     /// Returns metadata about an LLM, if the client knows about it.
@@ -916,6 +1014,7 @@ impl LLMPreferences {
             async move { ai_api_client.get_feature_model_choices().await },
             |me, result, ctx| match result {
                 Ok(update) => {
+                    let update = update.with_current_local_codex_mode();
                     if update != me.models_by_feature {
                         me.on_server_update(update, ctx);
                     }
@@ -934,6 +1033,7 @@ impl LLMPreferences {
             async move { ai_api_client.get_free_available_models(None).await },
             |me, result, ctx| match result {
                 Ok(update) => {
+                    let update = update.with_current_local_codex_mode();
                     if update != me.models_by_feature {
                         me.on_server_update(update, ctx);
                     }
@@ -964,6 +1064,7 @@ impl LLMPreferences {
     }
 
     fn on_server_update(&mut self, update: ModelsByFeature, ctx: &mut ModelContext<Self>) {
+        let update = update.with_current_local_codex_mode();
         let has_existing_persisted_config = get_cached_models(ctx).is_some();
 
         let old = std::mem::replace(&mut self.models_by_feature, update);

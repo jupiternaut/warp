@@ -1,9 +1,9 @@
-use crate::ai::agent::RenderableAIError;
+use crate::ai::agent::{conversation::AIConversation, RenderableAIError};
 use crate::server::server_api::ai::TaskStatusUpdate;
 use crate::terminal::cli_agent_sessions::CLIAgentSessionStatus;
 use warp_graphql::ai::{AgentTaskState, PlatformErrorCode};
 
-use super::{classify_renderable_error, map_cli_session_status};
+use super::{classify_renderable_error, is_local_codex_conversation, map_cli_session_status};
 
 /// Helper to assert a (state, Option<TaskStatusUpdate>) tuple.
 fn assert_update(
@@ -142,4 +142,20 @@ fn cli_blocked_without_message() {
     let (state, update) = map_cli_session_status(&CLIAgentSessionStatus::Blocked { message: None });
     assert_eq!(state, AgentTaskState::Blocked);
     assert!(update.is_none());
+}
+
+#[test]
+fn local_codex_conversation_token_is_skipped() {
+    let mut conversation = AIConversation::new(false);
+    conversation.set_server_conversation_token("local-codex-test".to_string());
+
+    assert!(is_local_codex_conversation(&conversation));
+}
+
+#[test]
+fn server_conversation_token_is_not_local_codex() {
+    let mut conversation = AIConversation::new(false);
+    conversation.set_server_conversation_token("server-conversation-test".to_string());
+
+    assert!(!is_local_codex_conversation(&conversation));
 }

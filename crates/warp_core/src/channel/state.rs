@@ -13,8 +13,25 @@ use crate::{
 
 use super::Channel;
 
+const LOCAL_CODEX_AI_ENV: &str = "WARP_LOCAL_CODEX_AI";
+const LOCAL_CODEX_DEFAULT_DATA_PROFILE: &str = "codex-local";
+
 lazy_static! {
     static ref CHANNEL_STATE: Mutex<ChannelState> = Mutex::new(ChannelState::init());
+}
+
+fn default_local_codex_data_profile() -> Option<String> {
+    if cfg!(test) {
+        return None;
+    }
+
+    let local_codex_disabled = std::env::var(LOCAL_CODEX_AI_ENV).ok().is_some_and(|value| {
+        matches!(
+            value.to_ascii_lowercase().as_str(),
+            "0" | "false" | "off" | "no"
+        )
+    });
+    (!local_codex_disabled).then(|| LOCAL_CODEX_DEFAULT_DATA_PROFILE.to_string())
 }
 
 #[cfg(feature = "test-util")]
@@ -131,7 +148,9 @@ impl ChannelState {
     /// supported in release builds.
     pub fn data_profile() -> Option<String> {
         if cfg!(debug_assertions) {
-            std::env::var("WARP_DATA_PROFILE").ok()
+            std::env::var("WARP_DATA_PROFILE")
+                .ok()
+                .or_else(default_local_codex_data_profile)
         } else {
             None
         }
