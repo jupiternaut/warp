@@ -22,6 +22,7 @@ else
   CHANNEL_SUFFIX="${BINARY_NAME#warp}"
 fi
 REPO_NAME="warpdotdev$CHANNEL_SUFFIX"
+LOCAL_CODEX_BUNDLE="${LOCAL_CODEX_BUNDLE:-false}"
 
 # On Linux, we keep the `-stable` suffix for stable to avoid package conflicts.
 # The binary name is still `oz`, and the repo name is still `warpdotdev`.
@@ -85,6 +86,9 @@ source "$WORKSPACE_ROOT_DIR/script/linux/bundle_install" "$PKGDIR"
 # Move the Debian-specific package metadata into the package directory.
 DEBIAN_DIR="$PKGDIR/DEBIAN"
 VERSION="$(echo "$GIT_RELEASE_TAG" | sed -E "s/^v//; s/([a-z]+)_/\1./")"
+if [ -z "$VERSION" ] && [ "$LOCAL_CODEX_BUNDLE" = "true" ]; then
+  VERSION="0.1.0+local"
+fi
 mkdir "$DEBIAN_DIR"
 sed \
     "s#@@CHANNEL_SUFFIX@@#$CHANNEL_SUFFIX#g; s#@@VERSION@@#$VERSION#g; s#@@ARCH@@#$ARCH#g" \
@@ -94,18 +98,22 @@ sed \
     "s#@@CHANNEL_SUFFIX@@#$CHANNEL_SUFFIX#g; s#@@BINARY_NAME@@#$BINARY_NAME#g; s#@@OPTDIR@@#$OPT_DIR#g; s#@@REPO_NAME@@#$REPO_NAME#g; s#@@CHANNEL@@#$RELEASE_CHANNEL#g; s#@@ARCH@@#$ARCH#g" \
     < "$TEMPLATE_DIR/postinst.template" \
     > "$DEBIAN_DIR/postinst"
-sed \
-    "s#@@REPO_NAME@@#$REPO_NAME#g; s#@@CHANNEL@@#$RELEASE_CHANNEL#g; s#@@ARCH@@#$ARCH#g" \
-    < "$WORKSPACE_ROOT_DIR/resources/linux/debian/common/postinst.repo.template" \
-    >> "$DEBIAN_DIR/postinst"
+if [ "$LOCAL_CODEX_BUNDLE" != "true" ]; then
+    sed \
+        "s#@@REPO_NAME@@#$REPO_NAME#g; s#@@CHANNEL@@#$RELEASE_CHANNEL#g; s#@@ARCH@@#$ARCH#g" \
+        < "$WORKSPACE_ROOT_DIR/resources/linux/debian/common/postinst.repo.template" \
+        >> "$DEBIAN_DIR/postinst"
+fi
 sed \
     "s#@@CHANNEL_SUFFIX@@#$CHANNEL_SUFFIX#g; s#@@OPTDIR@@#$OPT_DIR#g; s#@@REPO_NAME@@#$REPO_NAME#g" \
     < "$TEMPLATE_DIR/postrm.template" \
     > "$DEBIAN_DIR/postrm"
-sed \
-    "s#@@REPO_NAME@@#$REPO_NAME#g" \
-    < "$WORKSPACE_ROOT_DIR/resources/linux/debian/common/postrm.repo.template" \
-    >> "$DEBIAN_DIR/postrm"
+if [ "$LOCAL_CODEX_BUNDLE" != "true" ]; then
+    sed \
+        "s#@@REPO_NAME@@#$REPO_NAME#g" \
+        < "$WORKSPACE_ROOT_DIR/resources/linux/debian/common/postrm.repo.template" \
+        >> "$DEBIAN_DIR/postrm"
+fi
 
 # Make the package scripts executable.
 chmod 755 \

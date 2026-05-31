@@ -439,6 +439,39 @@ miniz_oxide.opt-level = 3
 inherits = "release"
 lto = "thin"
 
+[profile.release-lowmem]
+inherits = "release"
+opt-level = 1
+debug = 0
+split-debuginfo = "off"
+codegen-units = 256
+
+[profile.package-lowmem]
+inherits = "release"
+opt-level = 0
+debug = 0
+split-debuginfo = "off"
+incremental = false
+codegen-units = 256
+
+[profile.package-lowmem.package.gemm-common]
+opt-level = 3
+
+[profile.package-lowmem.package.gemm-f16]
+opt-level = 3
+
+[profile.package-lowmem.package.gemm-f32]
+opt-level = 3
+
+[profile.package-lowmem.package.gemm-f64]
+opt-level = 3
+
+[profile.package-lowmem.package.gemm-c32]
+opt-level = 3
+
+[profile.package-lowmem.package.gemm-c64]
+opt-level = 3
+
 # A shorthand profile for `release-lto`.
 # Windows enforces that any path is a maximum of 255 characters and
 # the length of this profile is sufficiently long that it can cause

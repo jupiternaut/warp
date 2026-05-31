@@ -22,11 +22,14 @@ trap cleanup EXIT
 # By default we build dev bundles.
 RELEASE_CHANNEL="dev"
 FEATURES="release_bundle,crash_reporting"
+NO_DEFAULT_FEATURES=false
 PACKAGES=( appimage )
 BUILD="true"
 BUILD_ARCH="$(uname -m)"
 DEBUG=false
 ARTIFACT="app"
+LOCAL_CODEX=false
+UBUNTU_VERSION=""
 
 # Cache all params so we can pass them to downstream scripts.
 ALL_PARAMS=$@
@@ -39,9 +42,25 @@ while (( "$#" )); do
       shift
       ;;
     --check-only)
-      echo 'Only running `cargo check` and not producing a bundle.'
       CHECK_ONLY="true"
       shift
+      ;;
+    --local-codex)
+      LOCAL_CODEX=true
+      shift
+      ;;
+    --ubuntu)
+      if [ -n "$2" ] && [ "${2:0:1}" != "-" ]; then
+        if [[ "$2" != "24.04" && "$2" != "26.04" ]]; then
+          echo "Error: --ubuntu must be either '24.04' or '26.04', got '$2'" >&2
+          exit 1
+        fi
+        UBUNTU_VERSION="$2"
+        shift 2
+      else
+        echo "Error: Argument for $1 is missing" >&2
+        exit 1
+      fi
       ;;
     --skip-build)
       BUILD="false"
@@ -112,6 +131,17 @@ done
 # set positional arguments in their proper place
 eval set -- "$PARAMS"
 
+if [[ $LOCAL_CODEX = true ]]; then
+  if [[ $RELEASE_CHANNEL != "oss" ]]; then
+    echo "Error: --local-codex is only supported with --channel oss." >&2
+    exit 1
+  fi
+  if [[ "$ARTIFACT" != "app" ]]; then
+    echo "Error: --local-codex currently only supports --artifact app." >&2
+    exit 1
+  fi
+fi
+
 if [[ $DEBUG = true ]]; then
   CARGO_PROFILE="dev"
 elif [[ $RELEASE_CHANNEL = "local" || $RELEASE_CHANNEL = "dev" ]]; then
@@ -129,6 +159,10 @@ else
   else
     CARGO_PROFILE="release-lto"
   fi
+fi
+
+if [[ -n "${WARP_LINUX_CARGO_PROFILE:-}" ]]; then
+  CARGO_PROFILE="$WARP_LINUX_CARGO_PROFILE"
 fi
 
 if [[ "$CARGO_PROFILE" == "dev" ]]; then
@@ -181,6 +215,12 @@ elif [[ $RELEASE_CHANNEL = "oss" ]]; then
   FEATURES="release_bundle"
 fi
 
+if [[ $LOCAL_CODEX = true ]]; then
+  BINARY_NAME="warp-codex-oss"
+  APP_NAME="WarpCodexOss"
+  export HANDLE_MARKDOWN=1
+fi
+
 # Artifact-specific binary naming
 if [[ "$ARTIFACT" == "cli" ]]; then
   # For CLI artifacts, use oz instead of warp as the binary name.  The OSS
@@ -198,6 +238,19 @@ elif [[ "$ARTIFACT" == "app" ]]; then
   FEATURES="$FEATURES,gui,nld_improvements"
 fi
 
+if [[ -n "${WARP_LINUX_FEATURES:-}" ]]; then
+  FEATURES="$WARP_LINUX_FEATURES"
+fi
+
+if [[ "${WARP_LINUX_NO_DEFAULT_FEATURES:-}" == "1" ]]; then
+  NO_DEFAULT_FEATURES=true
+fi
+
+CARGO_FEATURE_ARGS=(--features "$FEATURES")
+if [[ "$NO_DEFAULT_FEATURES" == "true" ]]; then
+  CARGO_FEATURE_ARGS=(--no-default-features "${CARGO_FEATURE_ARGS[@]}")
+fi
+
 BUNDLE_ID="dev.warp.$APP_NAME"
 EXECUTABLE_PATH="$CARGO_TARGET_OUTPUT_DIR/$WARP_BIN"
 DEBUG_EXECUTABLE_PATH="$EXECUTABLE_PATH.debug"
@@ -206,19 +259,22 @@ DEBUG_EXECUTABLE_PATH="$EXECUTABLE_PATH.debug"
 # binary, as it is read at compile time by Linux autoupdate logic (to know the
 # expected name of the AppImage when downloading updates).
 export APPIMAGE_NAME="$APP_NAME-$BUILD_ARCH.AppImage"
+export LOCAL_CODEX_BUNDLE="$LOCAL_CODEX"
+export WARP_LINUX_TARGET_UBUNTU="$UBUNTU_VERSION"
 
 # If we only want to check that compilation will succeed, perform the checks
 # then exit.  We use this script to invoke `cargo check` to ensure that we are
 # using the same feature flags and profile that we would be using in production.
 if [[ "$CHECK_ONLY" == "true" ]]; then
-  cargo check -p warp --profile "$CARGO_PROFILE" --bin "$WARP_BIN" --features "$FEATURES"
+  echo 'Only running `cargo check` and not producing a bundle.'
+  cargo check -p warp --profile "$CARGO_PROFILE" --bin "$WARP_BIN" "${CARGO_FEATURE_ARGS[@]}"
   exit 0
 fi
 
 # Build the binary.
 if [[ "$BUILD" == "true" ]]; then
   echo "Building and bundling Warp for channel $RELEASE_CHANNEL and bundle id $BUNDLE_ID"
-  cargo build -p warp --profile "$CARGO_PROFILE" --bin "$WARP_BIN" --features "$FEATURES"
+  cargo build -p warp --profile "$CARGO_PROFILE" --bin "$WARP_BIN" "${CARGO_FEATURE_ARGS[@]}"
   echo "Making debug copy of '$EXECUTABLE_PATH' at '$DEBUG_EXECUTABLE_PATH'"
   cp "$EXECUTABLE_PATH" "$DEBUG_EXECUTABLE_PATH"
 

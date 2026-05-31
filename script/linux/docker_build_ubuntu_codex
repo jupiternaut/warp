@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+#
+# Builds WarpCodexOss Ubuntu packages inside a Docker Ubuntu container.
+
+set -euo pipefail
+
+UBUNTU_VERSION=""
+ARCH="$(uname -m)"
+PACKAGES="deb,appimage"
+CHECK_ONLY=false
+RELEASE_TAG="${GIT_RELEASE_TAG:-v0.1.0+local}"
+
+usage() {
+  cat <<'EOF'
+Usage: ./script/linux/docker_build_ubuntu_codex --ubuntu <24.04|26.04> [options]
+
+Options:
+  --ubuntu <version>      Required. Supported values: 24.04, 26.04.
+  --arch <x86_64|aarch64> Build architecture. Defaults to host architecture.
+  --packages <list>       Package list. Default: deb,appimage.
+  --release-tag <tag>     Debian package version source. Default: v0.1.0+local.
+  --check-only            Run cargo check only.
+EOF
+}
+
+while (( "$#" )); do
+  case "$1" in
+    --ubuntu)
+      UBUNTU_VERSION="${2:-}"
+      shift 2
+      ;;
+    --arch)
+      ARCH="${2:-}"
+      shift 2
+      ;;
+    --packages)
+      PACKAGES="${2:-}"
+      shift 2
+      ;;
+    --release-tag)
+      RELEASE_TAG="${2:-}"
+      shift 2
+      ;;
+    --check-only)
+      CHECK_ONLY=true
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
+
+if [[ "$UBUNTU_VERSION" != "24.04" && "$UBUNTU_VERSION" != "26.04" ]]; then
+  echo "Error: --ubuntu must be either 24.04 or 26.04." >&2
+  usage >&2
+  exit 1
+fi
+
+case "$ARCH" in
+  x86_64)
+    DOCKER_PLATFORM="linux/amd64"
+    ;;
+  aarch64|arm64)
+    ARCH="aarch64"
+    DOCKER_PLATFORM="linux/arm64"
+    ;;
+  *)
+    echo "Error: --arch must be x86_64 or aarch64." >&2
+    exit 1
+    ;;
+esac
+
+if ! docker info >/dev/null 2>&1; then
+  echo "Error: Docker is not running. Start Docker Desktop, then retry." >&2
+  exit 1
+fi
+
+DOCKER_HOST_PROXY="http://host.docker.internal:7897"
+LOCAL_CODEX_FEATURES="release_bundle,gui,agent_mode,agent_view,render_agent_mode_output_markdown,agent_mode_primary_xml,agent_mode_pre_plan_xml,inline_slash_commands,inline_model_selector,settings_file,markdown_tables,markdown_mermaid,agent_decides_command_execution"
+DOCKER_RUN_ARGS=()
+
+if [[ "$(uname -s)" != "Darwin" ]]; then
+  DOCKER_RUN_ARGS+=(--add-host "host.docker.internal:host-gateway")
+fi
+
+CHECK_ONLY_ARG=""
+if [[ "$CHECK_ONLY" = true ]]; then
+  CHECK_ONLY_ARG="--check-only"
+fi
+
+DOCKER_ENV=(
+  -e DEBIAN_FRONTEND=noninteractive
+  -e CARGO_BUILD_JOBS=1
+  -e HTTP_PROXY="$DOCKER_HOST_PROXY"
+  -e HTTPS_PROXY="$DOCKER_HOST_PROXY"
+  -e ALL_PROXY="$DOCKER_HOST_PROXY"
+  -e http_proxy="$DOCKER_HOST_PROXY"
+  -e https_proxy="$DOCKER_HOST_PROXY"
+  -e all_proxy="$DOCKER_HOST_PROXY"
+  -e NO_PROXY="localhost,127.0.0.1,::1,host.docker.internal"
+  -e no_proxy="localhost,127.0.0.1,::1,host.docker.internal"
+  -e WARP_BUNDLE_UBUNTU="$UBUNTU_VERSION"
+  -e WARP_BUNDLE_ARCH="$ARCH"
+  -e WARP_BUNDLE_PACKAGES="$PACKAGES"
+  -e WARP_BUNDLE_RELEASE_TAG="$RELEASE_TAG"
+  -e WARP_BUNDLE_CHECK_ONLY="$CHECK_ONLY_ARG"
+  -e WARP_LINUX_NO_DEFAULT_FEATURES=1
+  -e WARP_LINUX_FEATURES="$LOCAL_CODEX_FEATURES"
+)
+
+docker run --rm \
+  --platform "$DOCKER_PLATFORM" \
+  ${DOCKER_RUN_ARGS[@]+"${DOCKER_RUN_ARGS[@]}"} \
+  "${DOCKER_ENV[@]}" \
+  -v "$PWD":/workspace \
+  -w /workspace \
+  "ubuntu:$UBUNTU_VERSION" \
+  bash -lc '
+    set -euo pipefail
+    cat >/etc/apt/apt.conf.d/99warp-retries <<APTCONF
+Acquire::Retries "5";
+Acquire::http::Timeout "30";
+Acquire::https::Timeout "30";
+Acquire::http::Proxy "http://host.docker.internal:7897";
+Acquire::https::Proxy "http://host.docker.internal:7897";
+APTCONF
+    apt-get update
+    for attempt in 1 2 3; do
+      if apt-get install -y --fix-missing --no-install-recommends ca-certificates curl git sudo unzip; then
+        break
+      fi
+      if [[ "$attempt" = 3 ]]; then
+        exit 1
+      fi
+      echo "apt-get install failed; refreshing package index and retrying..."
+      apt-get update
+      sleep $((attempt * 5))
+    done
+    GITHUB_ACTIONS=true ./script/linux/install_build_deps
+    source "$HOME/.cargo/env"
+    if ! cargo about --version >/dev/null 2>&1; then
+      cargo install --locked cargo-about@0.8.4
+    fi
+    export WARP_LINUX_CARGO_PROFILE=package-lowmem
+    if [[ ",$WARP_BUNDLE_PACKAGES," == *",appimage,"* ]]; then
+      ./script/linux/install_linuxdeploy
+    fi
+    cargo fetch
+    WORKFLOWS_MANIFEST="$(find "$HOME/.cargo/git/checkouts" -path "*/workflows/Cargo.toml" -print -quit)"
+    if [[ -n "$WORKFLOWS_MANIFEST" ]]; then
+      cargo check --manifest-path "$WORKFLOWS_MANIFEST"
+    fi
+    ./script/linux/bundle_ubuntu_codex --ubuntu "$WARP_BUNDLE_UBUNTU" --arch "$WARP_BUNDLE_ARCH" --packages "$WARP_BUNDLE_PACKAGES" --release-tag "$WARP_BUNDLE_RELEASE_TAG" $WARP_BUNDLE_CHECK_ONLY
+  '

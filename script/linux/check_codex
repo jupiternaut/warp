@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+#
+# Checks whether the local Codex CLI is available and authenticated through the
+# official Codex login flow. This script never reads ~/.codex/auth.json.
+
+set -euo pipefail
+
+CODEX_BIN="${WARP_LOCAL_CODEX_BIN:-codex}"
+
+if ! CODEX_PATH="$(command -v "$CODEX_BIN" 2>/dev/null)"; then
+  echo "Codex CLI was not found on PATH. Install Codex, then run 'codex' or 'codex login --device-auth'."
+  exit 1
+fi
+
+if ! CODEX_VERSION="$("$CODEX_PATH" --version 2>&1)"; then
+  echo "Codex CLI exists but 'codex --version' failed."
+  echo "$CODEX_VERSION"
+  exit 1
+fi
+
+if ! LOGIN_STATUS="$("$CODEX_PATH" login status 2>&1)"; then
+  echo "Unable to check Codex login status. Run 'codex' or 'codex login --device-auth', then try again."
+  echo "$LOGIN_STATUS"
+  exit 1
+fi
+
+if [[ "$LOGIN_STATUS" != *"Logged in"* ]]; then
+  echo "Codex CLI is not logged in. Run 'codex' or 'codex login --device-auth', then try again."
+  echo "$LOGIN_STATUS"
+  exit 1
+fi
+
+echo "Codex CLI: $CODEX_PATH"
+echo "Codex version: $CODEX_VERSION"
+echo "Codex login status: $LOGIN_STATUS"

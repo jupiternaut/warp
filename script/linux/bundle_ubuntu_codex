@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+#
+# Builds the WarpCodexOss Linux client for supported Ubuntu releases.
+
+set -euo pipefail
+
+UBUNTU_VERSION=""
+PACKAGES="deb,appimage"
+ARCH=""
+CHECK_ONLY=false
+RELEASE_TAG="${GIT_RELEASE_TAG:-v0.1.0+local}"
+
+usage() {
+  cat <<'EOF'
+Usage: ./script/linux/bundle_ubuntu_codex --ubuntu <24.04|26.04> [options]
+
+Options:
+  --ubuntu <version>      Required. Supported values: 24.04, 26.04.
+  --packages <list>       Package list passed to linux bundle. Default: deb,appimage.
+  --arch <x86_64|aarch64> Build architecture. Defaults to host architecture.
+  --release-tag <tag>     Debian package version source. Default: v0.1.0+local.
+  --check-only            Run cargo check with production Linux feature flags only.
+EOF
+}
+
+while (( "$#" )); do
+  case "$1" in
+    --ubuntu)
+      UBUNTU_VERSION="${2:-}"
+      shift 2
+      ;;
+    --packages)
+      PACKAGES="${2:-}"
+      shift 2
+      ;;
+    --arch)
+      ARCH="${2:-}"
+      shift 2
+      ;;
+    --release-tag)
+      RELEASE_TAG="${2:-}"
+      shift 2
+      ;;
+    --check-only)
+      CHECK_ONLY=true
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
+
+if [[ "$UBUNTU_VERSION" != "24.04" && "$UBUNTU_VERSION" != "26.04" ]]; then
+  echo "Error: --ubuntu must be either 24.04 or 26.04." >&2
+  usage >&2
+  exit 1
+fi
+
+if [[ "$(uname -s)" != "Linux" ]]; then
+  echo "Error: Ubuntu bundles must be built on Linux. Use an Ubuntu $UBUNTU_VERSION machine or container." >&2
+  exit 1
+fi
+
+if [[ -r /etc/os-release ]]; then
+  # shellcheck disable=SC1091
+  source /etc/os-release
+  if [[ "${ID:-}" != "ubuntu" || "${VERSION_ID:-}" != "$UBUNTU_VERSION" ]]; then
+    echo "Error: this host is ${PRETTY_NAME:-unknown}, but --ubuntu $UBUNTU_VERSION was requested." >&2
+    exit 1
+  fi
+fi
+
+PARAMS=(
+  --channel oss
+  --local-codex
+  --ubuntu "$UBUNTU_VERSION"
+  --packages "$PACKAGES"
+  --release-tag "$RELEASE_TAG"
+)
+
+if [[ -n "$ARCH" ]]; then
+  PARAMS+=(--arch "$ARCH")
+fi
+
+if [[ "$CHECK_ONLY" = true ]]; then
+  PARAMS+=(--check-only)
+fi
+
+./script/linux/bundle "${PARAMS[@]}"
