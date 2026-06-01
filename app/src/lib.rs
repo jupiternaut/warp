@@ -36,6 +36,7 @@ mod drive;
 mod dynamic_libraries;
 mod env_vars;
 mod experiments;
+mod extensions;
 mod external_secrets;
 #[cfg(target_family = "wasm")]
 mod font_fallback;
@@ -2920,6 +2921,8 @@ pub fn enabled_features() -> HashSet<FeatureFlag> {
         FeatureFlag::HandoffCloudCloud,
         #[cfg(feature = "git_credential_refresh")]
         FeatureFlag::GitCredentialRefresh,
+        #[cfg(feature = "vs_code_extensions")]
+        FeatureFlag::VsCodeExtensions,
     ]);
 
     flags

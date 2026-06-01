@@ -872,6 +872,9 @@ pub enum FeatureFlag {
 
     /// Replaces the raw harness CLI command with a styled header showing CLI name + status icon.
     HarnessSessionHeader,
+
+    /// Gates the VSIX / VS Code extension contract layer. This does not enable Node execution.
+    VsCodeExtensions,
 }
 
 static FLAG_STATES: [AtomicBool; cardinality::<FeatureFlag>()] =
