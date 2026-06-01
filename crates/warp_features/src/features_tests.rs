@@ -11,3 +11,12 @@ fn test_all_preview_flags_have_a_description() {
         );
     }
 }
+
+#[test]
+fn vs_code_extensions_flag_is_canonical_feature_flag_variant() {
+    assert!(enum_iterator::all::<FeatureFlag>().any(|flag| flag == FeatureFlag::VsCodeExtensions));
+    assert_eq!(
+        format!("{:?}", FeatureFlag::VsCodeExtensions),
+        "VsCodeExtensions"
+    );
+}
