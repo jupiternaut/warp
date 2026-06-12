@@ -12,7 +12,7 @@ use html5ever::{
 use markup5ever_rcdom::{Node, NodeData, RcDom};
 
 use crate::{
-    CodeBlockText, FormattedIndentTextInline, FormattedTaskList, FormattedText,
+    CodeBlockText, FormattedImage, FormattedIndentTextInline, FormattedTaskList, FormattedText,
     FormattedTextFragment, FormattedTextHeader, FormattedTextInline, FormattedTextLine,
     FormattedTextStyles, Hyperlink, OrderedFormattedIndentTextInline,
     markdown_parser::RUNNABLE_BLOCK_MARKDOWN_LANG, weight::CustomWeight,
@@ -335,6 +335,15 @@ pub fn parse_html(html: &str) -> Result<FormattedText> {
                     }),
                     "br" => FormattedTextLine::LineBreak,
                     "hr" => FormattedTextLine::HorizontalRule,
+                    "img" => FormattedTextLine::Image(FormattedImage {
+                        alt_text: get_attribute(&attrs.borrow(), "alt")
+                            .unwrap_or_default()
+                            .to_string(),
+                        source: get_attribute(&attrs.borrow(), "src")
+                            .unwrap_or_default()
+                            .to_string(),
+                        title: get_attribute(&attrs.borrow(), "title").map(ToOwned::to_owned),
+                    }),
                     _ => {
                         // Take into consideration the indent level when parsing the nodes.
                         let parsed_node = parse_pending_inline_nodes(

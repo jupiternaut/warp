@@ -244,6 +244,14 @@ pub unsafe fn from_native(
             precise: native_event.hasPreciseScrollingDeltas() == YES,
             modifiers,
         }),
+        NSEventType::NSEventTypeMagnify => window_height.map(|window_height| Event::Magnify {
+            position: vec2f(
+                native_event.locationInWindow().x as f32,
+                window_height - native_event.locationInWindow().y as f32,
+            ),
+            delta: native_event.magnification() as f32,
+            modifiers,
+        }),
         _ => None,
     }
 }

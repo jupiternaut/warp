@@ -21,6 +21,7 @@ impl DispatchedEvent {
         match self.event {
             Event::KeyDown { .. } => Some(&self.event),
             Event::ScrollWheel { position, .. }
+            | Event::Magnify { position, .. }
             | Event::LeftMouseDown { position, .. }
             | Event::LeftMouseUp { position, .. }
             | Event::LeftMouseDragged { position, .. }
@@ -103,6 +104,11 @@ pub enum Event {
         position: Vector2F,
         delta: Vector2F,
         precise: bool,
+        modifiers: ModifiersState,
+    },
+    Magnify {
+        position: Vector2F,
+        delta: f32,
         modifiers: ModifiersState,
     },
     LeftMouseDown {
@@ -259,6 +265,7 @@ impl InBoundsExt for Event {
 
         match self {
             ScrollWheel { position, .. }
+            | Magnify { position, .. }
             | LeftMouseDown { position, .. }
             | LeftMouseUp { position, .. }
             | LeftMouseDragged { position, .. }
@@ -289,6 +296,15 @@ impl Scale for Event {
                 position: position.scale_up(zoom_factor),
                 delta,
                 precise,
+                modifiers,
+            },
+            Event::Magnify {
+                position,
+                delta,
+                modifiers,
+            } => Event::Magnify {
+                position: position.scale_up(zoom_factor),
+                delta,
                 modifiers,
             },
             Event::LeftMouseDown {

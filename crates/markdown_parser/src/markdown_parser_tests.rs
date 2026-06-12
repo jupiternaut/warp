@@ -2485,6 +2485,84 @@ fn test_parse_image_with_other_content() {
     assert!(matches!(result[4], FormattedTextLine::Line(_)));
 }
 
+#[test]
+fn test_parse_inline_svg_block_as_image() {
+    let source = r##"<svg width="20" height="10" viewBox="0 0 20 10" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Demo">
+<defs>
+  <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+    <path d="M 0 0 L 10 5 L 0 10 z" fill="#111111"/>
+  </marker>
+</defs>
+<rect x="1" y="1" width="18" height="8" fill="#f8fafc" stroke="#111111"/>
+<path d="M 3 5 H 17" stroke="#111111" marker-end="url(#arrow)"/>
+</svg>
+"##;
+
+    let parsed = test_parse_markdown(source);
+    assert_eq!(parsed.len(), 1);
+    let FormattedTextLine::Image(image) = &parsed[0] else {
+        panic!("expected inline SVG image, got {:?}", parsed[0]);
+    };
+
+    assert_eq!(image.alt_text, "Inline SVG");
+    let decoded = decode_inline_svg_data_uri(&image.source).expect("SVG data URI should decode");
+    let decoded = std::str::from_utf8(&decoded).expect("SVG should be UTF-8");
+    assert!(decoded.contains("<svg"));
+    assert!(decoded.contains("marker-end=\"url(#arrow)\""));
+}
+
+#[test]
+fn test_parse_inline_svg_rejects_script() {
+    let source = r#"<svg width="10" height="10"><script>alert(1)</script></svg>
+"#;
+
+    let parsed = test_parse_markdown(source);
+    assert!(
+        !parsed
+            .iter()
+            .any(|line| matches!(line, FormattedTextLine::Image(_))),
+        "unsafe SVG should fall back to text, got {parsed:?}"
+    );
+}
+
+#[test]
+fn test_parse_raw_html_block() {
+    let source = "<h2>Hello <strong>world</strong></h2>\n<p><em>copy</em></p>\n";
+    let parsed = test_parse_markdown(source);
+
+    assert_eq!(parsed.len(), 2);
+    assert_eq!(
+        parsed[0],
+        FormattedTextLine::Heading(FormattedTextHeader {
+            heading_size: 2,
+            text: vec![
+                FormattedTextFragment::plain_text("Hello "),
+                FormattedTextFragment::bold("world"),
+            ],
+        })
+    );
+    assert_eq!(
+        parsed[1],
+        FormattedTextLine::Line(vec![FormattedTextFragment::italic("copy")])
+    );
+}
+
+#[test]
+fn test_parse_raw_html_img_block() {
+    let source = r#"<img src="./diagram.svg" alt="Diagram" title="Architecture">
+"#;
+    let parsed = test_parse_markdown(source);
+
+    assert_eq!(
+        parsed,
+        vec![FormattedTextLine::Image(FormattedImage {
+            alt_text: "Diagram".to_string(),
+            source: "./diagram.svg".to_string(),
+            title: Some("Architecture".to_string()),
+        })]
+    );
+}
+
 // Table parsing tests
 
 #[test]

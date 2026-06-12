@@ -253,6 +253,10 @@ void warp_marked_text_cleared(WarpHostView *);
     if (self.readyForWarp) warp_handle_view_event(self, event, NO);
 }
 
+- (void)magnifyWithEvent:(NSEvent *)event {
+    if (self.readyForWarp) warp_handle_view_event(self, event, NO);
+}
+
 - (void)mouseMoved:(NSEvent *)event {
     if (self.readyForWarp) warp_handle_view_event(self, event, NO);
 }

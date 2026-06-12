@@ -16,6 +16,8 @@ type KeyHandler = Box<dyn FnMut(&mut EventContext, &AppContext, &Keystroke) -> D
 type ScrollHandler = Box<
     dyn FnMut(&mut EventContext, &AppContext, &Vector2F, &ModifiersState) -> DispatchEventResult,
 >;
+type MagnifyHandler =
+    Box<dyn FnMut(&mut EventContext, &AppContext, f32, &ModifiersState) -> DispatchEventResult>;
 type ModifierStateChangedHandler =
     Box<dyn FnMut(&mut EventContext, &AppContext, &KeyCode, &KeyState) -> DispatchEventResult>;
 
@@ -55,6 +57,7 @@ pub struct EventHandler {
     mouse_out: Option<RefCell<Handler>>,
     mouse_dragged: Option<RefCell<Handler>>,
     scroll_wheel: Option<RefCell<ScrollHandler>>,
+    magnify: Option<RefCell<MagnifyHandler>>,
     keydown: Option<RefCell<KeyHandler>>,
     modifier_state_changed: Option<RefCell<ModifierStateChangedHandler>>,
     origin: Option<Point>,
@@ -82,6 +85,7 @@ impl EventHandler {
             mouse_out: None,
             mouse_dragged: None,
             scroll_wheel: None,
+            magnify: None,
             keydown: None,
             modifier_state_changed: None,
             origin: None,
@@ -191,6 +195,15 @@ impl EventHandler {
             + FnMut(&mut EventContext, &AppContext, &Vector2F, &ModifiersState) -> DispatchEventResult,
     {
         self.scroll_wheel = Some(RefCell::new(Box::new(callback)));
+        self
+    }
+
+    pub fn on_magnify<F>(mut self, callback: F) -> Self
+    where
+        F: 'static
+            + FnMut(&mut EventContext, &AppContext, f32, &ModifiersState) -> DispatchEventResult,
+    {
+        self.magnify = Some(RefCell::new(Box::new(callback)));
         self
     }
 
@@ -350,6 +363,23 @@ impl Element for EventHandler {
                     {
                         if rect.contains_point(*position) {
                             return match callback.borrow_mut()(ctx, app, delta, modifiers) {
+                                DispatchEventResult::PropagateToParent => false,
+                                DispatchEventResult::StopPropagation => true,
+                            };
+                        }
+                    }
+                }
+            }
+            Some(Event::Magnify {
+                position,
+                delta,
+                modifiers,
+            }) => {
+                if let Some(callback) = self.magnify.as_ref() {
+                    if let Some(rect) = ctx.visible_rect(self.origin.unwrap(), self.size().unwrap())
+                    {
+                        if rect.contains_point(*position) {
+                            return match callback.borrow_mut()(ctx, app, *delta, modifiers) {
                                 DispatchEventResult::PropagateToParent => false,
                                 DispatchEventResult::StopPropagation => true,
                             };

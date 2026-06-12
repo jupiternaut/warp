@@ -25,6 +25,7 @@ pub fn event_description(event: &Event) -> String {
         Event::MiddleMouseDown { .. } => "MiddleMouseDown".to_string(),
         Event::MouseMoved { .. } => "MouseMoved".to_string(),
         Event::ScrollWheel { .. } => "ScrollWheel".to_string(),
+        Event::Magnify { .. } => "Magnify".to_string(),
         Event::ModifierStateChanged { .. } => "ModifierStateChanged".to_string(),
         Event::ModifierKeyChanged { .. } => "ModifierKeyChanged".to_string(),
         Event::DragAndDropFiles { .. } => "DragAndDropFiles".to_string(),

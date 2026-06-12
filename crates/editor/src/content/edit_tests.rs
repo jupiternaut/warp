@@ -13,6 +13,7 @@ use crate::{
         model::{BlockItem, test_utils::TEST_STYLES},
     },
 };
+use markdown_parser::FormattedTextLine;
 use std::path::Path;
 use string_offset::CharOffset;
 use warp_core::features::FeatureFlag;
@@ -395,6 +396,30 @@ fn test_resolve_asset_source_relative_to_directory_uses_base_directory() {
         }
         source => panic!("expected local file asset source, got {source:?}"),
     }
+}
+
+#[test]
+fn test_resolve_inline_svg_data_uri_uses_async_asset_source() {
+    let parsed = markdown_parser::parse_markdown(
+        r##"<svg width="10" height="10" xmlns="http://www.w3.org/2000/svg">
+<rect width="10" height="10" fill="#111111"/>
+</svg>"##,
+    )
+    .expect("inline SVG markdown should parse");
+    let Some(FormattedTextLine::Image(image)) = parsed.lines.front() else {
+        panic!(
+            "expected inline SVG to parse as an image, got {:?}",
+            parsed.lines
+        );
+    };
+
+    let asset_source =
+        resolve_asset_source_relative_to_directory(&image.source, Some(Path::new("/tmp/session")));
+
+    assert!(
+        matches!(asset_source, AssetSource::Async { .. }),
+        "expected inline SVG data URI to resolve as async in-memory asset, got {asset_source:?}"
+    );
 }
 
 #[test]

@@ -32,7 +32,7 @@ use crate::{
     cmd_or_ctrl_shift,
     editor::InteractionState,
     menu::{MenuItem, MenuItemFields},
-    notebooks::editor::{model::NotebooksEditorModel, rich_text_styles},
+    notebooks::editor::{model::NotebooksEditorModel, rich_text_styles_with_zoom},
     pane_group::{
         focus_state::PaneFocusHandle,
         pane::view,
@@ -80,6 +80,11 @@ pub enum MarkdownDisplayMode {
     Raw,
 }
 
+const MARKDOWN_PREVIEW_DEFAULT_ZOOM: f32 = 1.0;
+const MARKDOWN_PREVIEW_MIN_ZOOM: f32 = 0.6;
+const MARKDOWN_PREVIEW_MAX_ZOOM: f32 = 2.5;
+const MARKDOWN_PREVIEW_ZOOM_STEP: f32 = 0.1;
+
 /// View for a read-only notebook backed by a file, rather than Warp Drive.
 pub struct FileNotebookView {
     /// The location of the open file. This is cached for displaying the title and breadcrumbs.
@@ -105,6 +110,7 @@ pub struct FileNotebookView {
     /// This is preserved so we can restore it when toggling between raw and rendered Markdown.
     #[cfg(feature = "local_fs")]
     code_source: Option<CodeSource>,
+    preview_zoom: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -144,6 +150,10 @@ pub enum FileNotebookAction {
     OpenAsCode,
     ContextMenu(ContextMenuAction),
     ToggleMarkdownDisplayMode(MarkdownDisplayMode),
+    IncreasePreviewZoom,
+    DecreasePreviewZoom,
+    ResetPreviewZoom,
+    AdjustPreviewZoom(f32),
 }
 
 impl From<ContextMenuAction> for FileNotebookAction {
@@ -230,6 +240,27 @@ pub fn init(app: &mut AppContext) {
             FileNotebookAction::ReloadFile,
         )
         .with_context_predicate(id!("FileNotebookView")),
+        EditableBinding::new(
+            "notebookview:increase_markdown_preview_zoom",
+            "Increase Markdown preview zoom",
+            FileNotebookAction::IncreasePreviewZoom,
+        )
+        .with_context_predicate(id!("FileNotebookView"))
+        .with_key_binding("alt-cmdorctrl-="),
+        EditableBinding::new(
+            "notebookview:decrease_markdown_preview_zoom",
+            "Decrease Markdown preview zoom",
+            FileNotebookAction::DecreasePreviewZoom,
+        )
+        .with_context_predicate(id!("FileNotebookView"))
+        .with_key_binding("alt-cmdorctrl--"),
+        EditableBinding::new(
+            "notebookview:reset_markdown_preview_zoom",
+            "Reset Markdown preview zoom",
+            FileNotebookAction::ResetPreviewZoom,
+        )
+        .with_context_predicate(id!("FileNotebookView"))
+        .with_key_binding("alt-cmdorctrl-0"),
     ])
 }
 
@@ -243,7 +274,11 @@ impl FileNotebookView {
         let view_position_id = format!("file_notebook_view_{}", ctx.view_id());
 
         let editor_model = ctx.add_model(|ctx| {
-            let styles = rich_text_styles(Appearance::as_ref(ctx), FontSettings::as_ref(ctx));
+            let styles = rich_text_styles_with_zoom(
+                Appearance::as_ref(ctx),
+                FontSettings::as_ref(ctx),
+                MARKDOWN_PREVIEW_DEFAULT_ZOOM,
+            );
             NotebooksEditorModel::new(styles, window_id, ctx)
         });
         let editor = ctx.add_typed_action_view(|ctx| {
@@ -294,6 +329,7 @@ impl FileNotebookView {
             display_mode_segmented_control,
             #[cfg(feature = "local_fs")]
             code_source: None,
+            preview_zoom: MARKDOWN_PREVIEW_DEFAULT_ZOOM,
         }
     }
 
@@ -591,6 +627,23 @@ impl FileNotebookView {
         }
     }
 
+    fn set_preview_zoom(&mut self, zoom: f32, ctx: &mut ViewContext<Self>) {
+        let zoom = zoom.clamp(MARKDOWN_PREVIEW_MIN_ZOOM, MARKDOWN_PREVIEW_MAX_ZOOM);
+        if (self.preview_zoom - zoom).abs() < f32::EPSILON {
+            return;
+        }
+        self.preview_zoom = zoom;
+        self.editor.update(ctx, |editor, ctx| {
+            editor.set_style_zoom(zoom, ctx);
+        });
+        ctx.notify();
+    }
+
+    fn adjust_preview_zoom(&mut self, delta: f32, ctx: &mut ViewContext<Self>) {
+        let factor = (1.0 + delta).clamp(0.8, 1.25);
+        self.set_preview_zoom(self.preview_zoom * factor, ctx);
+    }
+
     fn handle_editor_event(
         &mut self,
         _handle: ViewHandle<RichTextEditorView>,
@@ -844,6 +897,24 @@ impl View for FileNotebookView {
                     );
                     DispatchEventResult::StopPropagation
                 })
+                .on_magnify(|ctx, _, delta, _| {
+                    if delta.abs() < 0.001 {
+                        return DispatchEventResult::PropagateToParent;
+                    }
+                    ctx.dispatch_typed_action(FileNotebookAction::AdjustPreviewZoom(delta));
+                    DispatchEventResult::StopPropagation
+                })
+                .on_scroll_wheel(|ctx, _, delta, modifiers| {
+                    if !modifiers.cmd && !modifiers.ctrl {
+                        return DispatchEventResult::PropagateToParent;
+                    }
+                    if delta.y() > 0.0 {
+                        ctx.dispatch_typed_action(FileNotebookAction::IncreasePreviewZoom);
+                    } else if delta.y() < 0.0 {
+                        ctx.dispatch_typed_action(FileNotebookAction::DecreasePreviewZoom);
+                    }
+                    DispatchEventResult::StopPropagation
+                })
                 .finish(),
             &self.view_position_id,
         )
@@ -862,6 +933,16 @@ impl TypedActionView for FileNotebookView {
                 ctx.emit(FileNotebookEvent::Pane(PaneEvent::FocusActiveSession))
             }
             FileNotebookAction::ReloadFile => self.reload_file(ctx),
+            FileNotebookAction::IncreasePreviewZoom => {
+                self.set_preview_zoom(self.preview_zoom + MARKDOWN_PREVIEW_ZOOM_STEP, ctx)
+            }
+            FileNotebookAction::DecreasePreviewZoom => {
+                self.set_preview_zoom(self.preview_zoom - MARKDOWN_PREVIEW_ZOOM_STEP, ctx)
+            }
+            FileNotebookAction::ResetPreviewZoom => {
+                self.set_preview_zoom(MARKDOWN_PREVIEW_DEFAULT_ZOOM, ctx)
+            }
+            FileNotebookAction::AdjustPreviewZoom(delta) => self.adjust_preview_zoom(*delta, ctx),
             #[cfg(feature = "local_fs")]
             FileNotebookAction::CopyFilePath => {
                 if let Some(path) = self.local_path() {

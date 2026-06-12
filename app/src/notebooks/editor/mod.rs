@@ -15,7 +15,10 @@ use warp_editor::{
     },
 };
 use warp_util::user_input::UserInput;
-use warpui::{elements::Border, fonts::FamilyId, ui_components::checkbox::HOVER_BACKGROUND_COLOR};
+use warpui::{
+    elements::Border, fonts::FamilyId, ui_components::checkbox::HOVER_BACKGROUND_COLOR,
+    units::IntoPixels,
+};
 
 use crate::{
     appearance::Appearance,
@@ -273,6 +276,31 @@ pub fn rich_text_styles(appearance: &Appearance, font_settings: &FontSettings) -
         highlight_urls: true,
         table_style: markdown_table_style(appearance, appearance.ui_font_family(), font_size),
     }
+}
+
+pub fn rich_text_styles_with_zoom(
+    appearance: &Appearance,
+    font_settings: &FontSettings,
+    zoom: f32,
+) -> RichTextStyles {
+    let mut styles = rich_text_styles(appearance, font_settings);
+    let zoom = zoom.max(0.1);
+    scale_paragraph_styles(&mut styles.base_text, zoom);
+    scale_paragraph_styles(&mut styles.code_text, zoom);
+    scale_paragraph_styles(&mut styles.embedding_text, zoom);
+    styles.check_box_style.border_width *= zoom;
+    styles.horizontal_rule_style.rule_height *= zoom;
+    styles.minimum_paragraph_height = styles
+        .minimum_paragraph_height
+        .map(|height| (height.as_f32() * zoom).into_pixels());
+    styles.cursor_width *= zoom;
+    styles.table_style.font_size *= zoom;
+    styles.table_style.cell_padding *= zoom;
+    styles
+}
+
+fn scale_paragraph_styles(styles: &mut ParagraphStyles, zoom: f32) {
+    styles.font_size *= zoom;
 }
 
 impl From<BlockType> for BufferBlockStyle {

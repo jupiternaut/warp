@@ -4,9 +4,11 @@ use std::{
     mem,
     ops::Range,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use anyhow::{Result, anyhow};
+use bytes::Bytes;
 use itertools::Itertools;
 use markdown_parser::{Hyperlink, TableAlignment};
 use num_traits::SaturatingSub;
@@ -17,7 +19,7 @@ use vec1::Vec1;
 use warp_core::{features::FeatureFlag, ui::theme::Fill as ThemeFill};
 use warpui::{
     AppContext,
-    assets::asset_cache::AssetSource,
+    assets::asset_cache::{AssetSource, AsyncAssetId, AsyncAssetType},
     fonts::Weight,
     text::point::Point,
     text_layout::{StyleAndFont, TextAlignment},
@@ -47,6 +49,9 @@ use super::{
     text::{BufferBlockItem, BufferBlockStyle, CodeBlockType, FormattedTable, TableBlockCache},
 };
 
+struct InlineSvgAsset;
+impl AsyncAssetType for InlineSvgAsset {}
+
 #[cfg(test)]
 #[path = "edit_tests.rs"]
 mod tests;
@@ -65,7 +70,15 @@ pub fn resolve_asset_source_relative_to_directory(
     source: &str,
     base_directory: Option<&Path>,
 ) -> AssetSource {
-    if source.starts_with("http://") || source.starts_with("https://") {
+    if let Some(svg_bytes) = markdown_parser::decode_inline_svg_data_uri(source) {
+        AssetSource::Async {
+            id: AsyncAssetId::new::<InlineSvgAsset>(source.to_string()),
+            fetch: Arc::new(move || {
+                let svg_bytes = Bytes::from(svg_bytes.clone());
+                Box::pin(async move { Ok(svg_bytes) })
+            }),
+        }
+    } else if source.starts_with("http://") || source.starts_with("https://") {
         asset_cache::url_source(source)
     } else if source.starts_with("/") {
         AssetSource::LocalFile {

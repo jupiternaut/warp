@@ -89,7 +89,7 @@ use super::{
     link_editor::{LinkEditor, LinkEditorEvent},
     model::{NotebooksEditorModel, RichTextEditorModelEvent},
     omnibar::{Omnibar, OmnibarEvent},
-    rich_text_styles, BlockType, NotebookWorkflow,
+    rich_text_styles_with_zoom, BlockType, NotebookWorkflow,
 };
 
 #[cfg(test)]
@@ -1048,6 +1048,8 @@ pub struct RichTextEditorView {
 
     /// When true, the block insertion menu (slash menu) is disabled.
     disable_block_insertion_menu: bool,
+
+    style_zoom: f32,
 }
 
 #[derive(Default)]
@@ -1155,6 +1157,7 @@ impl RichTextEditorView {
             can_execute_shell_commands: config.can_execute_shell_commands.unwrap_or(true),
             disable_scrolling: config.disable_scrolling,
             disable_block_insertion_menu: config.disable_block_insertion_menu,
+            style_zoom: 1.0,
         }
     }
 
@@ -1275,10 +1278,19 @@ impl RichTextEditorView {
     fn handle_appearance_or_font_change(&mut self, ctx: &mut ViewContext<Self>) {
         let font_settings = FontSettings::as_ref(ctx);
         let appearance = Appearance::as_ref(ctx);
-        let new_styles = rich_text_styles(appearance, font_settings);
+        let new_styles = rich_text_styles_with_zoom(appearance, font_settings, self.style_zoom);
         self.model.update(ctx, move |model, ctx| {
             model.update_rich_text_styles(new_styles, ctx);
         });
+    }
+
+    pub fn set_style_zoom(&mut self, zoom: f32, ctx: &mut ViewContext<Self>) {
+        let zoom = zoom.max(0.1);
+        if (self.style_zoom - zoom).abs() < f32::EPSILON {
+            return;
+        }
+        self.style_zoom = zoom;
+        self.handle_appearance_or_font_change(ctx);
     }
 
     fn handle_fallback_font_event(

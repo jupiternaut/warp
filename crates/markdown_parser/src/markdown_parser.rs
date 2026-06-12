@@ -1,4 +1,5 @@
 use anyhow::Result;
+use base64::{Engine as _, engine::general_purpose};
 use itertools::Itertools;
 use nom::{
     FindToken, IResult, InputIter, InputLength, Parser, Slice,
@@ -21,6 +22,7 @@ use nom::{
 use serde_yaml::Value;
 use std::cell::RefCell;
 
+use crate::html_parser::parse_html;
 use crate::{
     CodeBlockText, FormattedImage, FormattedIndentTextInline, FormattedTable, FormattedTaskList,
     FormattedText, FormattedTextFragment, FormattedTextHeader, FormattedTextInline,
@@ -48,6 +50,40 @@ const INDENT_TAG_MAX_COUNT: usize = INDENT_MAX_LEVEL * NUM_SPACE_PER_INDENT_LEVE
 /// Formatting delimiter characters used for emphasis/strikethrough in Markdown.
 /// These are stripped from trailing URLs and used to detect valid autolink boundaries.
 const FORMATTING_DELIMITERS: &str = "*_~";
+
+const INLINE_SVG_ALT_TEXT: &str = "Inline SVG";
+const INLINE_SVG_DATA_URI_PREFIX: &str = "data:image/svg+xml;base64,";
+const INLINE_SVG_MAX_BYTES: usize = 1024 * 1024;
+
+const RAW_HTML_BLOCK_TAGS: &[&str] = &[
+    "article",
+    "aside",
+    "blockquote",
+    "body",
+    "br",
+    "div",
+    "footer",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "header",
+    "hr",
+    "html",
+    "img",
+    "li",
+    "main",
+    "nav",
+    "ol",
+    "p",
+    "pre",
+    "section",
+    "table",
+    "ul",
+];
+const RAW_HTML_VOID_BLOCK_TAGS: &[&str] = &["br", "hr", "img"];
 
 /// Tracks indentation context during list parsing to enable relative indentation calculation.
 #[derive(Debug, Clone)]
@@ -133,6 +169,99 @@ pub fn parse_markdown_to_raw_text(markdown: &str) -> Result<String> {
     Ok(formatted_text.raw_text())
 }
 
+pub fn decode_inline_svg_data_uri(source: &str) -> Option<Vec<u8>> {
+    let encoded = source.strip_prefix(INLINE_SVG_DATA_URI_PREFIX)?;
+    let decoded = general_purpose::STANDARD.decode(encoded).ok()?;
+    let svg = std::str::from_utf8(&decoded).ok()?;
+
+    if is_safe_inline_svg(svg) {
+        Some(decoded)
+    } else {
+        None
+    }
+}
+
+fn inline_svg_data_uri(svg: &str) -> Option<String> {
+    let svg = svg.trim();
+    if !is_safe_inline_svg(svg) {
+        return None;
+    }
+
+    Some(format!(
+        "{}{}",
+        INLINE_SVG_DATA_URI_PREFIX,
+        general_purpose::STANDARD.encode(svg.as_bytes())
+    ))
+}
+
+fn is_safe_inline_svg(svg: &str) -> bool {
+    let svg = svg.trim_start();
+    if svg.len() > INLINE_SVG_MAX_BYTES || !starts_with_ascii_case_insensitive(svg, "<svg") {
+        return false;
+    }
+
+    let lower = svg.to_ascii_lowercase();
+    ![
+        "<script",
+        "<foreignobject",
+        "<iframe",
+        "<object",
+        "<embed",
+        "<image",
+        "javascript:",
+        "data:text/html",
+        "href=\"http",
+        "href='http",
+        "href=http",
+        "xlink:href",
+        "url(http",
+        "url(//",
+        "url('http",
+        "url(\"http",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+        && !contains_event_handler_attribute(&lower)
+}
+
+fn contains_event_handler_attribute(lower_html: &str) -> bool {
+    let bytes = lower_html.as_bytes();
+    for index in 0..bytes.len().saturating_sub(2) {
+        if bytes[index] != b'o' || bytes[index + 1] != b'n' {
+            continue;
+        }
+
+        let previous_allows_attribute =
+            index == 0 || matches!(bytes[index - 1], b' ' | b'\n' | b'\r' | b'\t' | b'<' | b'/');
+        if !previous_allows_attribute {
+            continue;
+        }
+
+        let mut cursor = index + 2;
+        if cursor >= bytes.len() || !bytes[cursor].is_ascii_alphabetic() {
+            continue;
+        }
+
+        while cursor < bytes.len()
+            && (bytes[cursor].is_ascii_alphanumeric()
+                || bytes[cursor] == b'-'
+                || bytes[cursor] == b'_')
+        {
+            cursor += 1;
+        }
+
+        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+
+        if cursor < bytes.len() && bytes[cursor] == b'=' {
+            return true;
+        }
+    }
+
+    false
+}
+
 fn parse_markdown_internal<'a, E: ContextError<&'a str> + ParseError<&'a str>>(
     markdown: &'a str,
     parse_gfm_tables: bool,
@@ -142,80 +271,90 @@ fn parse_markdown_internal<'a, E: ContextError<&'a str> + ParseError<&'a str>>(
     let mut block = context(
         "block",
         alt((
-            parse_blank_line,
-            parse_horizontal_rule,
+            map(parse_blank_line, |line| vec![line]),
+            map(parse_horizontal_rule, |line| vec![line]),
             map(parse_code_block, |(lang, content)| {
                 if lang == EMBED_BLOCK_MARKDOWN_LANG
                     && let Ok(Value::Mapping(mapping)) = serde_yaml::from_str(&content)
                 {
-                    return FormattedTextLine::Embedded(mapping);
+                    return vec![FormattedTextLine::Embedded(mapping)];
                 }
                 if lang == TABLE_BLOCK_MARKDOWN_LANG {
-                    return FormattedTextLine::Table(FormattedTable::from_internal_format(
-                        &content,
-                    ));
+                    return vec![FormattedTextLine::Table(
+                        FormattedTable::from_internal_format(&content),
+                    )];
                 }
 
-                FormattedTextLine::CodeBlock(CodeBlockText {
+                vec![FormattedTextLine::CodeBlock(CodeBlockText {
                     lang: lang.to_string(),
                     code: content,
-                })
+                })]
             }),
-            map(parse_header, FormattedTextLine::Heading),
-            map(parse_image, FormattedTextLine::Image),
+            map(parse_header, |header| {
+                vec![FormattedTextLine::Heading(header)]
+            }),
+            map(parse_image, |image| vec![FormattedTextLine::Image(image)]),
+            map(parse_inline_svg_block, |image| {
+                vec![FormattedTextLine::Image(image)]
+            }),
             |i| {
                 parse_task_list(i, &indentation_context)
-                    .map(|(s, t)| (s, FormattedTextLine::TaskList(t)))
+                    .map(|(s, t)| (s, vec![FormattedTextLine::TaskList(t)]))
             },
             |i| {
                 parse_ordered_list(i, &indentation_context)
-                    .map(|(s, o)| (s, FormattedTextLine::OrderedList(o)))
+                    .map(|(s, o)| (s, vec![FormattedTextLine::OrderedList(o)]))
             },
             |i| {
                 parse_unordered_list(i, &indentation_context)
-                    .map(|(s, u)| (s, FormattedTextLine::UnorderedList(u)))
+                    .map(|(s, u)| (s, vec![FormattedTextLine::UnorderedList(u)]))
             },
             |i| {
                 if !parse_gfm_tables {
                     return Err(nom::Err::Error(E::from_error_kind(i, ErrorKind::Alt)));
                 }
-                map(parse_table, FormattedTextLine::Table)(i)
+                map(parse_table, |table| vec![FormattedTextLine::Table(table)])(i)
             },
-            parse_paragraph,
+            map(parse_raw_html_block, |formatted| {
+                formatted.lines.into_iter().collect()
+            }),
+            map(parse_paragraph, |line| vec![line]),
         )),
     );
 
     let mut remaining = markdown;
-    let mut lines = Vec::new();
+    let mut lines: Vec<FormattedTextLine> = Vec::new();
     while !remaining.is_empty() {
-        let (remaining_after_block, mut line) = block(remaining)?;
+        let (remaining_after_block, block_lines) = block(remaining)?;
         remaining = remaining_after_block;
 
-        // Clear indentation context for non-list content and handle ordered list numbering
-        match &mut line {
-            FormattedTextLine::LineBreak => {
-                // Line breaks don't reset context
-            }
-            FormattedTextLine::UnorderedList(_) | FormattedTextLine::TaskList(_) => {
-                // List items already update indentation context during parsing
-            }
-            FormattedTextLine::OrderedList(list_item) => {
-                // For ordered lists, only the starting item's number is applied. We reset the number for
-                // subsequent items here because, in isolation, we don't know if a given list item starts a
-                // list or not.
-                if let Some(FormattedTextLine::OrderedList(prev_list_item)) = lines.last()
-                    && prev_list_item.indented_text.indent_level
-                        >= list_item.indented_text.indent_level
-                {
-                    list_item.number = None;
+        for mut line in block_lines {
+            // Clear indentation context for non-list content and handle ordered list numbering
+            match &mut line {
+                FormattedTextLine::LineBreak => {
+                    // Line breaks don't reset context
+                }
+                FormattedTextLine::UnorderedList(_) | FormattedTextLine::TaskList(_) => {
+                    // List items already update indentation context during parsing
+                }
+                FormattedTextLine::OrderedList(list_item) => {
+                    // For ordered lists, only the starting item's number is applied. We reset the number for
+                    // subsequent items here because, in isolation, we don't know if a given list item starts a
+                    // list or not.
+                    if let Some(FormattedTextLine::OrderedList(prev_list_item)) = lines.last()
+                        && prev_list_item.indented_text.indent_level
+                            >= list_item.indented_text.indent_level
+                    {
+                        list_item.number = None;
+                    }
+                }
+                _ => {
+                    // Non-list content resets indentation context
+                    indentation_context.borrow_mut().clear();
                 }
             }
-            _ => {
-                // Non-list content resets indentation context
-                indentation_context.borrow_mut().clear();
-            }
+            lines.push(line);
         }
-        lines.push(line);
     }
 
     Ok((remaining, lines))
@@ -312,6 +451,110 @@ fn parse_image<'a, E: ContextError<&'a str> + ParseError<&'a str>>(
         let (input, _) = alt((value((), parse_line_ending), value((), eof)))(input)?;
         Ok((input, image))
     })(markdown)
+}
+
+fn parse_inline_svg_block<'a, E: ContextError<&'a str> + ParseError<&'a str>>(
+    markdown: &'a str,
+) -> IResult<&'a str, FormattedImage, E> {
+    context("inline_svg_block", |input| {
+        let (input, _) = parse_block_leading_spaces(input)?;
+        if !starts_with_ascii_case_insensitive(input, "<svg") {
+            return Err(nom::Err::Error(E::from_error_kind(input, ErrorKind::Tag)));
+        }
+
+        let close_start = find_ascii_case_insensitive(input, "</svg>")
+            .ok_or_else(|| nom::Err::Error(E::from_error_kind(input, ErrorKind::TakeUntil)))?;
+        let close_end = close_start + "</svg>".len();
+        let svg = &input[..close_end];
+        let source = inline_svg_data_uri(svg)
+            .ok_or_else(|| nom::Err::Error(E::from_error_kind(input, ErrorKind::Verify)))?;
+        let input = &input[close_end..];
+        let (input, _) = alt((value((), parse_line_ending), value((), eof)))(input)?;
+
+        Ok((
+            input,
+            FormattedImage {
+                alt_text: INLINE_SVG_ALT_TEXT.to_string(),
+                source,
+                title: None,
+            },
+        ))
+    })(markdown)
+}
+
+fn parse_raw_html_block<'a, E: ContextError<&'a str> + ParseError<&'a str>>(
+    markdown: &'a str,
+) -> IResult<&'a str, FormattedText, E> {
+    context("raw_html_block", |input| {
+        let (input, _) = parse_block_leading_spaces(input)?;
+        let tag_name = raw_html_start_tag_name(input)
+            .ok_or_else(|| nom::Err::Error(E::from_error_kind(input, ErrorKind::Tag)))?;
+        if tag_name == "svg" || !RAW_HTML_BLOCK_TAGS.contains(&tag_name.as_str()) {
+            return Err(nom::Err::Error(E::from_error_kind(input, ErrorKind::Tag)));
+        }
+
+        let (input, html) = if RAW_HTML_VOID_BLOCK_TAGS.contains(&tag_name.as_str()) {
+            parse_line(input)?
+        } else {
+            let close_tag = format!("</{tag_name}>");
+            let close_start = find_ascii_case_insensitive(input, &close_tag)
+                .ok_or_else(|| nom::Err::Error(E::from_error_kind(input, ErrorKind::TakeUntil)))?;
+            let close_end = close_start + close_tag.len();
+            let html = &input[..close_end];
+            let input = &input[close_end..];
+            let (input, _) = alt((value((), parse_line_ending), value((), eof)))(input)?;
+            (input, html)
+        };
+
+        let formatted = parse_html(html)
+            .map_err(|_| nom::Err::Error(E::from_error_kind(input, ErrorKind::Verify)))?;
+        if formatted.lines.is_empty() {
+            return Err(nom::Err::Error(E::from_error_kind(
+                input,
+                ErrorKind::Verify,
+            )));
+        }
+
+        Ok((input, formatted))
+    })(markdown)
+}
+
+fn raw_html_start_tag_name(input: &str) -> Option<String> {
+    let input = input.strip_prefix('<')?;
+    if input.starts_with('/') || input.starts_with('!') || input.starts_with('?') {
+        return None;
+    }
+
+    let tag_len = input
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+        .unwrap_or(input.len());
+    if tag_len == 0 {
+        return None;
+    }
+
+    let rest = &input[tag_len..];
+    if !rest.is_empty()
+        && !rest
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_whitespace() || c == '>' || c == '/')
+    {
+        return None;
+    }
+
+    Some(input[..tag_len].to_ascii_lowercase())
+}
+
+fn starts_with_ascii_case_insensitive(input: &str, prefix: &str) -> bool {
+    input
+        .get(..prefix.len())
+        .is_some_and(|start| start.eq_ignore_ascii_case(prefix))
+}
+
+fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
+    haystack
+        .to_ascii_lowercase()
+        .find(&needle.to_ascii_lowercase())
 }
 /// Parse a line consisting entirely of one or more Markdown images separated
 /// by whitespace.
