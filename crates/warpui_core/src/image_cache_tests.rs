@@ -496,7 +496,12 @@ fn test_evict_size_drops_arc_only_for_targeted_entry() {
     assert_eq!(weak_large.strong_count(), 1);
 
     // Evict only the small size entry.
-    image_cache.evict_size(&source, small_bounds, AnimatedImageBehavior::FullAnimation);
+    image_cache.evict_size(
+        &source,
+        small_bounds,
+        FitType::Cover,
+        AnimatedImageBehavior::FullAnimation,
+    );
 
     assert_eq!(
         weak_small.strong_count(),
@@ -507,6 +512,59 @@ fn test_evict_size_drops_arc_only_for_targeted_entry() {
         weak_large.strong_count(),
         1,
         "Large size Arc should remain alive; only the small size was evicted"
+    );
+}
+
+#[test]
+fn test_fit_type_is_part_of_rendered_image_cache_key() {
+    let asset_cache = new_asset_cache();
+    let image_cache = ImageCache::new();
+    let source = AssetSource::Bundled { path: "local.png" };
+    let bounds = Vector2I::new(96, 48);
+
+    let contain = image_cache.image(
+        source.clone(),
+        bounds,
+        FitType::Contain,
+        AnimatedImageBehavior::FullAnimation,
+        CacheOption::BySize,
+        None,
+        &asset_cache,
+    );
+    let AssetState::Loaded {
+        data: contain_image,
+    } = contain
+    else {
+        panic!("Bundled asset should be available immediately!");
+    };
+    let Image::Static(contain_image) = contain_image.as_ref() else {
+        panic!("Expected static image!");
+    };
+
+    let stretch = image_cache.image(
+        source,
+        bounds,
+        FitType::Stretch,
+        AnimatedImageBehavior::FullAnimation,
+        CacheOption::BySize,
+        None,
+        &asset_cache,
+    );
+    let AssetState::Loaded {
+        data: stretch_image,
+    } = stretch
+    else {
+        panic!("Bundled asset should be available immediately!");
+    };
+    let Image::Static(stretch_image) = stretch_image.as_ref() else {
+        panic!("Expected static image!");
+    };
+
+    assert_eq!(stretch_image.img.dimensions(), (96, 48));
+    assert_ne!(
+        contain_image.img.dimensions(),
+        stretch_image.img.dimensions(),
+        "different fit types with the same bounds must not reuse the same rendered cache entry"
     );
 }
 

@@ -6,7 +6,7 @@ use std::{
 };
 
 use markdown_parser::{parse_html, parse_markdown, FormattedText};
-use pathfinder_geometry::vector::vec2f;
+use pathfinder_geometry::vector::{vec2f, Vector2I};
 use string_offset::CharOffset;
 use warp_editor::{
     content::{
@@ -39,7 +39,7 @@ use warpui::{
     },
     event::ModifiersState,
     fonts::{FallbackFontEvent, FallbackFontModel},
-    image_cache::ImageType,
+    image_cache::{AnimatedImageBehavior, CacheOption, FitType, ImageCache, ImageType},
     keymap::{EditableBinding, FixedBinding},
     platform::{Cursor, OperatingSystem},
     presenter::ChildView,
@@ -1318,24 +1318,85 @@ impl RichTextEditorView {
         let render_state = render_state.as_ref(ctx);
         let viewport = render_state.viewport();
         let asset_cache = AssetCache::as_ref(ctx);
+        let image_cache = ImageCache::as_ref(ctx);
+        let (scale_factor, max_texture_dimension_2d) = ctx
+            .windows()
+            .platform_window(ctx.window_id())
+            .map(|window| {
+                let window = window.as_ctx();
+                (
+                    window.backing_scale_factor(),
+                    window.max_texture_dimension_2d(),
+                )
+            })
+            .unwrap_or((1.0, None));
 
         render_state
             .content()
             .viewport_items(viewport.height(), viewport.width(), viewport.scroll_top())
-            .filter_map(|(_, block)| Self::layout_affecting_asset_load(block, asset_cache))
+            .filter_map(|(_, block)| {
+                Self::layout_affecting_asset_load(
+                    block,
+                    asset_cache,
+                    image_cache,
+                    scale_factor,
+                    max_texture_dimension_2d,
+                )
+            })
             .collect()
     }
 
     fn layout_affecting_asset_load(
         block: &BlockItem,
         asset_cache: &AssetCache,
+        image_cache: &ImageCache,
+        scale_factor: f32,
+        max_texture_dimension_2d: Option<u32>,
     ) -> Option<AssetHandle> {
-        let BlockItem::MermaidDiagram { asset_source, .. } = block else {
-            return None;
+        let (asset_source, width, height, animated_image_behavior) = match block {
+            BlockItem::MermaidDiagram {
+                asset_source,
+                config,
+                ..
+            } => (
+                asset_source,
+                config.width,
+                config.height,
+                AnimatedImageBehavior::FullAnimation,
+            ),
+            BlockItem::Image {
+                asset_source,
+                config,
+                ..
+            } => (
+                asset_source,
+                config.width,
+                config.height,
+                AnimatedImageBehavior::FirstFramePreview,
+            ),
+            _ => return None,
         };
         match asset_cache.load_asset::<ImageType>(asset_source.clone()) {
             AssetState::Loading { handle } => Some(handle),
-            AssetState::Loaded { .. } | AssetState::Evicted | AssetState::FailedToLoad(_) => None,
+            AssetState::Loaded { .. } => {
+                let bounds = Vector2I::new(
+                    (width.as_f32() * scale_factor).round() as i32,
+                    (height.as_f32() * scale_factor).round() as i32,
+                );
+                if bounds.x() > 0 && bounds.y() > 0 {
+                    let _ = image_cache.image(
+                        asset_source.clone(),
+                        bounds,
+                        FitType::Contain,
+                        animated_image_behavior,
+                        CacheOption::BySize,
+                        max_texture_dimension_2d,
+                        asset_cache,
+                    );
+                }
+                None
+            }
+            AssetState::Evicted | AssetState::FailedToLoad(_) => None,
         }
     }
 

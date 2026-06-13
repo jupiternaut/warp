@@ -6,7 +6,8 @@ use std::{
     error,
     hash::{DefaultHasher, Hash, Hasher},
     rc::Rc,
-    sync::{Arc, LazyLock},
+    sync::{Arc, LazyLock, OnceLock},
+    time::{Duration, Instant},
 };
 use strum_macros::EnumIter;
 
@@ -28,6 +29,43 @@ use resvg::{
 };
 
 const MIN_REFRESH_DELAY_MS: u32 = 50;
+const MARKDOWN_PERF_ENV_VAR: &str = "WARP_MARKDOWN_PERF_LOG";
+const MARKDOWN_PERF_LOG_TARGET: &str = "warpcodexoss.markdown_perf";
+
+fn markdown_perf_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        let Ok(value) = std::env::var(MARKDOWN_PERF_ENV_VAR) else {
+            return false;
+        };
+        !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "" | "0" | "false" | "off" | "no"
+        )
+    })
+}
+
+fn markdown_perf_start() -> Option<Instant> {
+    markdown_perf_enabled().then(Instant::now)
+}
+
+fn markdown_perf_log(stage: &str, elapsed: Duration, details: impl fmt::Display) {
+    if !markdown_perf_enabled() {
+        return;
+    }
+
+    log::warn!(
+        target: MARKDOWN_PERF_LOG_TARGET,
+        "stage={stage} elapsed_ms={:.3} {details}",
+        elapsed.as_secs_f64() * 1000.0
+    );
+}
+
+fn markdown_perf_log_instant(stage: &str, start: Option<Instant>, details: impl fmt::Display) {
+    if let Some(start) = start {
+        markdown_perf_log(stage, start.elapsed(), details);
+    }
+}
 
 static SVG_FONT_DB: LazyLock<Arc<usvg::fontdb::Database>> = LazyLock::new(|| {
     let mut fontdb = usvg::fontdb::Database::new();
@@ -277,7 +315,18 @@ impl Asset for ImageType {
                 fontdb: SVG_FONT_DB.clone(),
                 ..Default::default()
             };
+            let parse_start = markdown_perf_start();
             let svg = Rc::new(usvg::Tree::from_data(data, &options)?);
+            markdown_perf_log_instant(
+                "svg_parse",
+                parse_start,
+                format_args!(
+                    "bytes={} width={:.1} height={:.1}",
+                    data.len(),
+                    svg.size().width(),
+                    svg.size().height()
+                ),
+            );
             return Ok(ImageType::Svg { svg });
         }
 
@@ -549,6 +598,7 @@ fn resize_animated_image(
 }
 
 fn svg_image(svg: &Rc<usvg::Tree>, bounds: Vector2I, fit_type: FitType) -> Result<Image> {
+    let perf_start = markdown_perf_start();
     let svg_size = &svg.size();
 
     let svg_has_wider_ratio =
@@ -569,6 +619,17 @@ fn svg_image(svg: &Rc<usvg::Tree>, bounds: Vector2I, fit_type: FitType) -> Resul
     resvg::render(svg.as_ref(), transform, &mut pixmap.as_mut());
 
     let img = image::RgbaImage::from_vec(pixmap.width(), pixmap.height(), pixmap.take()).ok_or_else(|| anyhow!("Failed to convert tiny_skia::Pixmap into image::ImageBuffer due to buffer size mismatch"))?;
+    markdown_perf_log_instant(
+        "svg_rasterize",
+        perf_start,
+        format_args!(
+            "bounds={}x{} output={}x{} fit_type={fit_type:?}",
+            bounds.x(),
+            bounds.y(),
+            img.width(),
+            img.height()
+        ),
+    );
 
     Ok(Image::Static(Arc::new(StaticImage { img })))
 }
@@ -791,6 +852,7 @@ impl FitTo {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct RenderedImageCacheKey {
     bounds: Vector2I,
+    fit_type: FitType,
     animated_image_behavior: AnimatedImageBehavior,
 }
 
@@ -833,6 +895,7 @@ impl ImageCache {
         &self,
         asset_source: &AssetSource,
         bounds: Vector2I,
+        fit_type: FitType,
         animated_image_behavior: AnimatedImageBehavior,
     ) {
         let mut s = DefaultHasher::new();
@@ -841,6 +904,7 @@ impl ImageCache {
 
         let rendered_key = RenderedImageCacheKey {
             bounds,
+            fit_type,
             animated_image_behavior,
         };
 
@@ -917,6 +981,7 @@ impl ImageCache {
 
                 let rendered_image_cache_key = RenderedImageCacheKey {
                     bounds,
+                    fit_type,
                     animated_image_behavior,
                 };
 
@@ -925,6 +990,16 @@ impl ImageCache {
                 let cache = self.images.upgradable_read();
                 if let Some(inner_map) = cache.get(&cache_key) {
                     if let Some(image) = inner_map.get(&rendered_image_cache_key) {
+                        markdown_perf_log(
+                            "image_cache_hit",
+                            Duration::ZERO,
+                            format_args!(
+                                "asset_type={} bounds={}x{} fit_type={fit_type:?} animated_image_behavior={animated_image_behavior:?} cache_option={cache_option:?}",
+                                data.type_str(),
+                                bounds.x(),
+                                bounds.y()
+                            ),
+                        );
                         return AssetState::Loaded {
                             data: image.clone(),
                         };
@@ -933,11 +1008,22 @@ impl ImageCache {
 
                 // Otherwise, create the correctly-sized image struct and
                 // insert it into the cache (if necessary).
+                let convert_start = markdown_perf_start();
                 let image =
                     match data.to_image(bounds, fit_type, needs_resize, animated_image_behavior) {
                         Ok(image) => Rc::new(image),
                         Err(err) => return AssetState::FailedToLoad(Rc::new(err)),
                     };
+                markdown_perf_log_instant(
+                    "image_cache_miss",
+                    convert_start,
+                    format_args!(
+                        "asset_type={} bounds={}x{} fit_type={fit_type:?} animated_image_behavior={animated_image_behavior:?} cache_option={cache_option:?} needs_resize={needs_resize}",
+                        data.type_str(),
+                        bounds.x(),
+                        bounds.y()
+                    ),
+                );
                 if needs_resize {
                     let mut images_cache = RwLockUpgradableReadGuard::upgrade(cache);
                     images_cache

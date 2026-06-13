@@ -65,7 +65,7 @@ use crate::code::editor_management::CodeSource;
 #[cfg(feature = "local_fs")]
 use crate::util::openable_file_type::FileTarget;
 use warp_core::ui::icons::ICON_DIMENSIONS;
-use warp_editor::model::CoreEditorModel;
+use warp_editor::{model::CoreEditorModel, perf};
 #[cfg(feature = "local_fs")]
 use warp_files::{FileModel, FileModelEvent};
 #[cfg(feature = "local_fs")]
@@ -360,6 +360,7 @@ impl FileNotebookView {
 
     /// Reset the rich text contents based on the given Markdown content.
     pub fn set_content(&mut self, content: &str, ctx: &mut ViewContext<Self>) {
+        let perf_start = perf::start();
         let doc_path = self.file_state.local_path().map(|p| p.to_path_buf());
         self.editor.update(ctx, |editor, ctx| {
             editor.reset_with_markdown(content, ctx);
@@ -368,6 +369,18 @@ impl FileNotebookView {
                 model.set_document_path(doc_path, ctx);
             });
         });
+        perf::log_instant(
+            "file_notebook_set_content",
+            perf_start,
+            format_args!(
+                "bytes={} lines={} source={}",
+                content.len(),
+                content.lines().count(),
+                self.file_state
+                    .display_name()
+                    .unwrap_or_else(|| "unknown".to_string())
+            ),
+        );
     }
 
     #[cfg(feature = "local_fs")]
@@ -632,11 +645,18 @@ impl FileNotebookView {
         if (self.preview_zoom - zoom).abs() < f32::EPSILON {
             return;
         }
+        let perf_start = perf::start();
+        let previous_zoom = self.preview_zoom;
         self.preview_zoom = zoom;
         self.editor.update(ctx, |editor, ctx| {
             editor.set_style_zoom(zoom, ctx);
         });
         ctx.notify();
+        perf::log_instant(
+            "file_notebook_preview_zoom",
+            perf_start,
+            format_args!("from={previous_zoom:.3} to={zoom:.3}"),
+        );
     }
 
     fn adjust_preview_zoom(&mut self, delta: f32, ctx: &mut ViewContext<Self>) {

@@ -836,7 +836,11 @@ impl Buffer {
         selection_model: ModelHandle<BufferSelectionModel>,
         ctx: &mut ModelContext<Self>,
     ) -> Self {
-        let parse_fn = if warp_core::features::FeatureFlag::MarkdownTables.is_enabled() {
+        let perf_enabled = crate::perf::enabled();
+        let total_start = crate::perf::start();
+        let parse_start = crate::perf::start();
+        let parse_gfm_tables = warp_core::features::FeatureFlag::MarkdownTables.is_enabled();
+        let parse_fn = if parse_gfm_tables {
             parse_markdown_with_gfm_tables
         } else {
             parse_markdown
@@ -853,13 +857,43 @@ impl Buffer {
                 FormattedText::new(vec![])
             }
         };
-        Self::from_formatted_text(
+        let parsed_line_count = parsed_formatted_text.lines.len();
+        if perf_enabled {
+            let lower_markdown = markdown.to_ascii_lowercase();
+            crate::perf::log_instant(
+                "markdown_parse",
+                parse_start,
+                format_args!(
+                    "bytes={} lines={} output_lines={} gfm_tables={} inline_svg_candidates={} image_markers={}",
+                    markdown.len(),
+                    markdown.lines().count(),
+                    parsed_line_count,
+                    parse_gfm_tables,
+                    lower_markdown.matches("<svg").count(),
+                    markdown.matches("![").count()
+                ),
+            );
+        }
+
+        let build_start = crate::perf::start();
+        let buffer = Self::from_formatted_text(
             parsed_formatted_text,
             embedded_item_conversion,
             tab_indentation,
             selection_model,
             ctx,
-        )
+        );
+        crate::perf::log_instant(
+            "formatted_text_to_buffer",
+            build_start,
+            format_args!("output_lines={parsed_line_count}"),
+        );
+        crate::perf::log_instant(
+            "markdown_to_buffer_total",
+            total_start,
+            format_args!("bytes={} output_lines={parsed_line_count}", markdown.len()),
+        );
+        buffer
     }
 
     fn replace(
